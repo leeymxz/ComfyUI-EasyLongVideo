@@ -1,0 +1,776 @@
+// ComfyUI-EasyLongVideo 前端面板
+// 功能：参数中文标签 / 参数预设 / 分段审核（试听/编辑/合并/拆分/连播）/
+//       历史项目 / 顺序生成控制 / 节点实时进度
+import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
+
+const NODE_TYPE = "EasyLVUnified";
+let stylesInjected = false;
+let panel = null; // { root, projectId, plan, polling, playlist }
+
+// 参数中文标签（仅改显示，不影响保存的工作流数据）
+const CN_LABELS = {
+    mode: "模式",
+    target_seconds: "目标段长（秒）",
+    max_seconds: "最长段长（秒）",
+    fps: "帧率 FPS",
+    frame_align: "帧数对齐",
+    asr_mode: "语音识别",
+    asr_model: "识别模型",
+    asr_device: "识别设备",
+    camera_activity: "镜头活跃度",
+    widest_framing: "最远允许景别",
+    project_id: "项目编号",
+    segment_index: "分段编号",
+};
+
+// 参数预设（H3 推荐组合）
+const PRESETS = {
+    "H3 唱歌": { mode: "singing", target_seconds: 11.0, max_seconds: 15.0,
+        fps: "24", frame_align: "h3", asr_mode: "auto", asr_model: "auto",
+        asr_device: "auto", camera_activity: "auto", widest_framing: "medium shot" },
+    "H3 口播": { mode: "speaking", target_seconds: 12.0, max_seconds: 15.0,
+        fps: "24", frame_align: "h3", asr_mode: "auto", asr_model: "auto",
+        asr_device: "auto", camera_activity: "steady", widest_framing: "medium close-up" },
+};
+
+function injectStyles() {
+    if (stylesInjected) return;
+    stylesInjected = true;
+    const style = document.createElement("style");
+    style.textContent = `
+    .elv-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.55); z-index: 99999;
+        display: flex; align-items: center; justify-content: center; }
+    .elv-panel { background: #1e1e22; color: #ddd; border-radius: 12px; width: min(1080px, 94vw);
+        max-height: 92vh; display: flex; flex-direction: column; box-shadow: 0 12px 48px rgba(0,0,0,.6); }
+    .elv-head { padding: 14px 18px; display: flex; align-items: center; gap: 10px;
+        border-bottom: 1px solid #333; flex-wrap: wrap; }
+    .elv-head h3 { margin: 0; font-size: 16px; color: #fff; flex: 1; min-width: 180px; }
+    .elv-badge { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: #2c2c31; }
+    .elv-badge.ok { background: #1d4030; color: #6fe3a1; }
+    .elv-badge.warn { background: #4a3a17; color: #f0c674; }
+    .elv-badge.err { background: #4a1f1f; color: #ff8f8f; }
+    .elv-body { overflow-y: auto; padding: 14px 18px; flex: 1; }
+    .elv-wave { width: 100%; height: 90px; background: #161618; border-radius: 8px;
+        margin-bottom: 4px; display: block; }
+    .elv-fullaudio { width: 100%; margin: 2px 0 8px; height: 34px; }
+    .elv-hint { font-size: 12px; color: #888; margin: 4px 0 12px; }
+    .elv-seg { border: 1px solid #333; border-radius: 10px; padding: 10px 12px;
+        margin-bottom: 10px; background: #232327; }
+    .elv-seg.playing { border-color: #d6a95a; background: #2a2620; }
+    .elv-seg.running { border-color: #5a8dd6; }
+    .elv-seg.done { border-color: #2e6e4e; }
+    .elv-seg.failed { border-color: #a05050; }
+    .elv-seg-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .elv-seg-title { font-weight: 600; color: #fff; }
+    .elv-time { color: #9ab; font-size: 12px; }
+    .elv-seg-head audio { height: 30px; max-width: 300px; }
+    .elv-spacer { flex: 1; }
+    .elv-text { font-size: 12px; color: #9aa; margin: 6px 0; white-space: pre-wrap; }
+    .elv-brief { width: 100%; box-sizing: border-box; background: #191a1d; color: #cde;
+        border: 1px solid #3a3a40; border-radius: 8px; font-size: 12px; padding: 8px;
+        min-height: 64px; resize: vertical; font-family: inherit; }
+    .elv-warn { color: #f0c674; font-size: 12px; margin-top: 4px; }
+    .elv-foot { padding: 12px 18px; border-top: 1px solid #333; display: flex;
+        gap: 8px; flex-wrap: wrap; align-items: center; }
+    .elv-foot .note { font-size: 12px; color: #f0c674; flex-basis: 100%; }
+    .elv-btn { background: #2f2f36; color: #eee; border: 1px solid #444; border-radius: 8px;
+        padding: 6px 14px; cursor: pointer; font-size: 13px; }
+    .elv-btn:hover { background: #3a3a44; }
+    .elv-btn.primary { background: #2563a8; border-color: #3178c6; }
+    .elv-btn.primary:hover { background: #2d72c0; }
+    .elv-btn.danger { background: #7a3030; border-color: #a04040; }
+    .elv-btn:disabled { opacity: .45; cursor: not-allowed; }
+    .elv-select { background: #232327; color: #ddd; border: 1px solid #444;
+        border-radius: 6px; padding: 5px 8px; font-size: 12px; max-width: 340px; }
+    .elv-mini { background: #191a1d; color: #ddd; border: 1px solid #3a3a40;
+        border-radius: 6px; padding: 5px 8px; font-size: 12px; width: 90px; }
+    .elv-close { background: transparent; border: none; color: #999; font-size: 20px;
+        cursor: pointer; line-height: 1; }
+    `;
+    document.head.appendChild(style);
+}
+
+async function apiGet(url) {
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+}
+async function apiPost(url, body) {
+    const res = await fetch(url, { method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body || {}) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    return data;
+}
+
+const fmt = (s) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+const esc = (t) => String(t ?? "").replace(/[&<>"]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+// ---------------------------------------------------------------- 波形
+
+function drawWave(canvas, analysis, plan) {
+    if (!canvas || !analysis?.waveform) return;
+    const ctx = canvas.getContext("2d");
+    const w = canvas.width = canvas.clientWidth * devicePixelRatio;
+    const h = canvas.height = (canvas.clientHeight || 110) * devicePixelRatio;
+    ctx.clearRect(0, 0, w, h);
+    const dur = analysis.duration || plan.duration || 1;
+    const dual = !!analysis.waveform.vocals;
+    const half = dual ? h / 2 : h;
+
+    function drawTrack(peaks, color, y0, hh, alpha) {
+        ctx.fillStyle = color;
+        ctx.globalAlpha = alpha;
+        const bw = Math.max(1, w / peaks.length - 0.5);
+        peaks.forEach((p, i) => {
+            const bh = Math.max(1, p * hh * 0.92);
+            ctx.fillRect((i / peaks.length) * w, y0 + (hh - bh) / 2, bw, bh);
+        });
+        ctx.globalAlpha = 1;
+    }
+    // 上：原曲（蓝）；下：人声（绿）
+    drawTrack(analysis.waveform.original || [], "#3d5a80", 0, half, 0.95);
+    if (dual) drawTrack(analysis.waveform.vocals, "#2e7d5b", half, h - half, 0.95);
+
+    // 段标签与切点
+    (plan.segments || []).forEach((row, i) => {
+        const x0 = (row.start_sample / plan.sample_rate) / dur * w;
+        if (i > 0) {
+            ctx.fillStyle = "#e05656";
+            ctx.fillRect(x0, 0, Math.max(1, devicePixelRatio), h);
+        }
+        if (i > 0 || true) {
+            const label = `第${i + 1}段`;
+            ctx.font = `${11 * devicePixelRatio}px sans-serif`;
+            const tw = ctx.measureText(label).width;
+            const lx = Math.min(x0 + 4 * devicePixelRatio, w - tw - 4);
+            ctx.fillStyle = "rgba(20,20,24,0.75)";
+            ctx.fillRect(lx - 3, 4, tw + 6, 15 * devicePixelRatio);
+            ctx.fillStyle = "#ffd98a";
+            ctx.fillText(label, lx, 15 * devicePixelRatio);
+        }
+    });
+    if (dual) {
+        ctx.font = `${10 * devicePixelRatio}px sans-serif`;
+        ctx.fillStyle = "#7fa8d9"; ctx.fillText("原曲", 6, half - 6);
+        ctx.fillStyle = "#6fd0a0"; ctx.fillText("人声", 6, h - 6);
+    }
+}
+
+// ---------------------------------------------------------------- 面板
+
+function statusBadge(plan) {
+    const map = { draft: ["draft", "warn"], running: ["生成中…", ""],
+        pausing: ["暂停中…", ""], stopping: ["停止中…", ""],
+        paused: ["已暂停", "warn"], stopped: ["已停止", "warn"],
+        merging: ["合成中…", ""], completed: ["已完成", "ok"],
+        completed_no_ffmpeg: ["完成（无 ffmpeg）", "warn"], failed: ["失败", "err"] };
+    const [text, cls] = map[plan.run_status] || [plan.run_status, ""];
+    return `<span class="elv-badge ${cls}">${text}</span>`;
+}
+
+function segClass(row) {
+    const st = row.job?.status;
+    if (st === "completed") return "done";
+    if (st === "failed") return "failed";
+    if (st === "queued" || st === "running") return "running";
+    return "";
+}
+
+function renderSegments(container, plan) {
+    const keep = container.dataset.playIndex || "";
+    container.innerHTML = "";
+    plan.segments.forEach((row, i) => {
+        const sr = plan.sample_rate;
+        const a = row.start_sample / sr, b = row.end_sample / sr;
+        const job = row.job || {};
+        const div = document.createElement("div");
+        div.className = `elv-seg ${segClass(row)} ${String(i) === keep ? "playing" : ""}`;
+        div.dataset.index = i;
+        div.innerHTML = `
+            <div class="elv-seg-head">
+                <span class="elv-seg-title">第 ${i + 1} 段</span>
+                <span class="elv-time">${fmt(a)} → ${fmt(b)}（${(b - a).toFixed(1)}s · ${row.generation_frames}帧 · ${esc(row.boundary_kind)}）</span>
+                <audio controls preload="none" src="/elv/project/${plan.id}/audio?index=${i}"></audio>
+                <span class="elv-spacer"></span>
+                <span class="elv-spacer"></span>
+                <span class="elv-badge ${job.status === "completed" ? "ok" : job.status === "failed" ? "err" : ""}">${esc(job.status || "pending")}</span>
+                <button class="elv-btn" data-act="cue" data-i="${i}" title="试听切点前后各2秒">◎ 试听切点</button>
+                <button class="elv-btn" data-act="redo" data-i="${i}" ${plan.run_status === "running" ? "disabled" : ""}>重做本段</button>
+                <button class="elv-btn" data-act="merge" data-i="${i}" ${i >= plan.segments.length - 1 ? "disabled" : ""}>并入下一段</button>
+                <button class="elv-btn" data-act="split" data-i="${i}">✂ 拆分</button>
+                ${(row.takes?.length || 0) > 0 ? `<button class="elv-btn" data-act="restore" data-i="${i}" ${plan.run_status === "running" ? "disabled" : ""}>↺ 恢复上一版 (${row.takes.length})</button>` : ""}
+            </div>
+            ${job.status === "completed" && job.video ? `
+            <div style="margin:8px 0 4px">
+                <div class="elv-hint" style="margin:0 0 4px">当前分段结果：</div>
+                <video controls preload="metadata" style="width:100%;max-height:280px;border-radius:8px;background:#111"
+                    src="/elv/project/${plan.id}/segment/${i}/video"></video>
+            </div>` : ""}
+            ${row.text ? `<div class="elv-text">${esc(row.text)}</div>` : ""}
+            <div class="elv-seg-head" style="margin-bottom:6px">
+                <label style="font-size:12px;color:#99a">本段镜头简报（可直接编辑，失焦自动保存）：</label>
+                ${row.brief_default ? `<button class="elv-btn" data-act="resetbrief" data-i="${i}" style="padding:2px 10px;font-size:12px" ${row.brief_edited ? "" : "disabled"}>↺ 恢复默认简报</button>` : ""}
+            </div>
+            <textarea class="elv-brief" data-i="${i}">${esc(row.brief)}</textarea>
+            ${(row.warnings || []).map((wn) => `<div class="elv-warn">⚠ ${esc(wn)}</div>`).join("")}
+            ${job.error ? `<div class="elv-warn">✖ ${esc(job.error)}</div>` : ""}`;
+        container.appendChild(div);
+    });
+}
+
+// 拆分弹窗：从候选切点中选择（或手输秒数）
+async function openSplitDialog(panel, index) {
+    const plan = panel.plan;
+    const row = plan.segments[index];
+    const sr = plan.sample_rate;
+    const a = row.start_sample / sr + 0.5, b = row.end_sample / sr - 0.5;
+    if (b - a < 1.0) { alert("这一段太短，无法拆分。"); return; }
+    let candidates = [];
+    try {
+        const analysis = await apiGet(`/elv/project/${panel.projectId}/analysis`);
+        candidates = (analysis.candidates || [])
+            .filter((c) => a <= c.time <= b && !c.protected)
+            .sort((x, y) => x.time - y.time).slice(0, 60);
+    } catch (err) { /* 没有诊断数据也允许手输 */ }
+    const overlay = document.createElement("div");
+    overlay.className = "elv-overlay";
+    overlay.innerHTML = `
+    <div class="elv-panel" style="width:min(560px,92vw)">
+        <div class="elv-head"><h3>✂ 拆分第 ${index + 1} 段</h3>
+            <button class="elv-close">✕</button></div>
+        <div class="elv-body">
+            <div class="elv-hint">范围 ${fmt(a)} ~ ${fmt(b)}。优先选择候选切点（置信度高、
+                位于人声低谷），确认后两侧将各成为独立分段。</div>
+            ${candidates.length ? `<select class="elv-select" id="elv-split-sel" style="width:100%">
+                ${candidates.map((c) => `<option value="${c.time}">${fmt(c.time)}s · ${esc(c.kind)} · 置信 ${c.confidence}</option>`).join("")}
+            </select>` : `<div class="elv-warn">该段范围内没有保存的候选切点，请手动输入时间。</div>`}
+            <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
+                <label style="font-size:12px">或手动输入（秒）：</label>
+                <input class="elv-mini" id="elv-split-manual" type="number"
+                    min="${a.toFixed(2)}" max="${b.toFixed(2)}" step="0.1"
+                    placeholder="${((a + b) / 2).toFixed(1)}">
+            </div>
+        </div>
+        <div class="elv-foot">
+            <button class="elv-btn primary" id="elv-split-ok">确认拆分</button>
+            <span class="elv-spacer"></span>
+            <span class="elv-hint">拆分后需要重新「保存并确认」。</span>
+        </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector(".elv-close").onclick = () => overlay.remove();
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector("#elv-split-ok").onclick = async () => {
+        const manual = overlay.querySelector("#elv-split-manual").value;
+        const sel = overlay.querySelector("#elv-split-sel");
+        const at = manual ? parseFloat(manual) : (sel ? parseFloat(sel.value) : NaN);
+        if (!isFinite(at) || at < a || at > b) { alert("请输入范围内的有效时间。"); return; }
+        try {
+            panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
+                { revision: panel.plan.revision, operations: [{ op: "split", index, at }] });
+            overlay.remove();
+            refresh(panel);
+        } catch (err) { alert(err.message); }
+    };
+}
+
+// 连播：依次播放每段音频
+function startPlaylist(panel) {
+    stopPlaylist(panel);
+    const player = new Audio();
+    panel.playlist = { player, index: 0 };
+    player.onended = () => {
+        const list = panel.plan?.segments || [];
+        const next = panel.playlist.index + 1;
+        if (next < list.length) playSegment(panel, next);
+        else stopPlaylist(panel);
+    };
+    playSegment(panel, 0);
+}
+function playSegment(panel, index) {
+    if (!panel.playlist) return;
+    panel.playlist.index = index;
+    panel.playlist.player.src = `/elv/project/${panel.projectId}/audio?index=${index}`;
+    panel.playlist.player.play().catch(() => {});
+    panel.listEl.dataset.playIndex = String(index);
+    renderSegments(panel.listEl, panel.plan);
+    bindSegmentEvents(panel);
+    const card = panel.listEl.querySelector(`[data-index="${index}"]`);
+    card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (panel.playBtn) {
+        panel.playBtn.textContent = `⏹ 连播中 (${index + 1}/${panel.plan.segments.length})`;
+    }
+}
+function stopPlaylist(panel) {
+    if (panel.playlist) {
+        panel.playlist.player.pause();
+        panel.playlist = null;
+    }
+    panel.listEl.dataset.playIndex = "";
+    if (panel.playBtn) panel.playBtn.textContent = "▶ 连播全部分段";
+    if (panel.plan) { renderSegments(panel.listEl, panel.plan); bindSegmentEvents(panel); }
+}
+
+function bindSegmentEvents(panel) {
+    panel.listEl.querySelectorAll(".elv-btn[data-act]").forEach((btn) => {
+        btn.onclick = async () => {
+            const i = +btn.dataset.i;
+            try {
+                if (btn.dataset.act === "merge") {
+                    panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
+                        { revision: panel.plan.revision,
+                          operations: [{ op: "merge_next", index: i }] });
+                    refresh(panel);
+                } else if (btn.dataset.act === "redo") {
+                    const promptPayload = await collectPromptPayload(panel);
+                    await apiPost(`/elv/project/${panel.projectId}/retry`,
+                        { index: i, ...promptPayload });
+                    refresh(panel);
+                } else if (btn.dataset.act === "split") {
+                    openSplitDialog(panel, i);
+                } else if (btn.dataset.act === "resetbrief") {
+                    try {
+                        panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
+                            { revision: panel.plan.revision,
+                              operations: [{ op: "reset_brief", index: i }] });
+                        refresh(panel);
+                    } catch (err) { alert(err.message); }
+                } else if (btn.dataset.act === "restore") {
+                    if (!confirm("将该段恢复到上一个版本？当前版本会归档保存。")) return;
+                    try {
+                        panel.plan = await apiPost(`/elv/project/${panel.projectId}/restore`,
+                            { index: i });
+                        refresh(panel);
+                    } catch (err) { alert(err.message); }
+                } else if (btn.dataset.act === "cue") {
+                    // 试听切点前后各 2 秒（切点质量精听）
+                    const plan = panel.plan;
+                    const row = plan.segments[i];
+                    const sr = plan.sample_rate;
+                    const cut = row.start_sample / sr;
+                    const t0 = Math.max(0, cut - 2), t1 = Math.min(plan.duration, cut + 2);
+                    try { panel.cuePlayer?.pause(); } catch (e) {}
+                    panel.cuePlayer = new Audio(
+                        `/elv/project/${panel.projectId}/audio?t0=${t0.toFixed(3)}&t1=${t1.toFixed(3)}`);
+                    panel.cuePlayer.play().catch(() => {});
+                }
+            } catch (err) { alert(err.message); }
+        };
+    });
+    panel.listEl.querySelectorAll(".elv-brief").forEach((ta) => {
+        ta.onchange = async () => {
+            try {
+                panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
+                    { revision: panel.plan.revision,
+                      operations: [{ op: "brief", index: +ta.dataset.i, brief: ta.value }] });
+                refresh(panel);
+            } catch (err) { alert(err.message); }
+        };
+    });
+}
+
+// 快照当前画布（API prompt），定位 loader 与视频输出节点
+async function collectPromptPayload(panel) {
+    const { workflow, output } = await app.graphToPrompt();
+    let loaderId = null;
+    let videoId = null;
+    const videoNodes = [];
+    for (const [id, node] of Object.entries(output || {})) {
+        if (node.class_type === NODE_TYPE) loaderId = id;
+        const ct = String(node.class_type || "");
+        if (/video|gif|save/i.test(ct)) videoNodes.push(id);
+    }
+    if (panel.videoSelect && panel.videoSelect.value) videoId = panel.videoSelect.value;
+    if (!loaderId) throw new Error("画布中未找到 EasyLVUnified 节点。");
+    if (!videoId) throw new Error("请选择视频输出节点（如 VHS Video Combine）。");
+    return { prompt: output, workflow, loader_id: loaderId, video_id: videoId,
+             client_id: api.clientId || "" };
+}
+
+async function refresh(panel) {
+    try {
+        const plan = await apiGet(`/elv/project/${panel.projectId}`);
+        panel.plan = plan;
+        panel.statusEl.innerHTML = statusBadge(plan) +
+            (plan.separation ? ` <span class="elv-badge">人声:${esc(plan.separation)}</span>` : "") +
+            (plan.error ? ` <span class="elv-warn">${esc(plan.error)}</span>` : "");
+        const warnEl = panel.overlay.querySelector("#elv-warns");
+        if (warnEl) {
+            const warns = plan.warnings || [];
+            warnEl.style.display = warns.length ? "block" : "none";
+            warnEl.innerHTML = warns.map((wn) => `⚠ ${esc(wn)}`).join("<br>");
+        }
+        // H3 接线指引（唱歌模式尤其重要：口型必须用人声驱动）
+        const wire = panel.overlay.querySelector("#elv-wire");
+        if (wire) {
+            if (plan.mode === "singing") {
+                wire.style.display = "block";
+                wire.innerHTML = "⚠ <b>唱歌模式接线提醒</b>：把 <b>vocals_padded（人声）</b>接到 H3 的音频输入" +
+                    "（驱动口型与动作，避免人物跟着鼓点贝斯乱开口）；" +
+                    "成片音轨（VHS 的 audio 输入）用 <b>original_audio_padded（原曲）</b>，保留伴奏。";
+            } else {
+                wire.style.display = "none";
+            }
+        }
+        renderSegments(panel.listEl, plan);
+        bindSegmentEvents(panel);
+        const running = ["running", "pausing", "stopping", "merging"].includes(plan.run_status);
+        // 诊断统计行（实时段状态 + 打开时缓存的识别/声学统计）
+        const done = plan.segments.filter((r) => r.job?.status === "completed").length;
+        const lowConf = plan.segments.filter((r) => (r.boundary_confidence ?? 1) < 0.5).length;
+        const a = panel.analysis;
+        const stats = [];
+        if (a) {
+            if (a.phrases?.length) stats.push(`${a.phrases.length} 句识别短语`);
+            if (a.sections?.length) stats.push(`${a.sections.length} 段疑似无人声区`);
+            if (a.protected_words?.length) stats.push(`${a.protected_words.length} 个受保护词`);
+        }
+        stats.push(`${done}/${plan.segments.length} 段已生成`);
+        if (lowConf) stats.push(`⚠ ${lowConf} 个低置信切点（请试听）`);
+        if (plan.separation) stats.push(`人声:${plan.separation}`);
+        const diagEl = panel.overlay.querySelector("#elv-diag");
+        if (diagEl) diagEl.innerHTML = `<span class="elv-hint" style="margin:0">诊断：${stats.map(esc).join(" · ")}</span>`;
+        panel.btnRun.disabled = running;
+        panel.btnApprove.disabled = running;
+        panel.btnPause.disabled = !running;
+        panel.btnStop.disabled = !running;
+        panel.finalEl.innerHTML = plan.final_video
+            ? `<video controls style="width:100%;border-radius:8px" src="/elv/project/${plan.id}/final"></video>` : "";
+        if (panel.retryInput && document.activeElement !== panel.retryInput) {
+            panel.retryInput.value = plan.auto_retry ?? 0;
+        }
+        if (!running && panel.polling) { clearInterval(panel.polling); panel.polling = null; }
+    } catch (err) { /* 静默轮询错误 */ }
+}
+
+async function fillHistory(panel) {
+    try {
+        const projects = await apiGet("/elv/projects");
+        const options = projects.map((p) =>
+            `<option value="${p.id}" ${p.id === panel.projectId ? "selected" : ""}>${new Date(p.created * 1000).toLocaleString()} · ${p.mode === "speaking" ? "口播" : "唱歌"} · ${p.count}段 · ${fmt(p.duration)}</option>`);
+        panel.historyEl.innerHTML =
+            `<option value="" disabled>选择历史项目…</option>` + options.join("");
+    } catch (err) { panel.historyEl.innerHTML = ""; }
+}
+
+function openPanel(projectId) {
+    injectStyles();
+    closePanel();
+    const overlay = document.createElement("div");
+    overlay.className = "elv-overlay";
+    overlay.innerHTML = `
+    <div class="elv-panel">
+        <div class="elv-head">
+            <h3>🎬 长视频分段审核</h3>
+            <select class="elv-select" id="elv-history" style="max-width:300px"></select>
+            <span id="elv-status"></span>
+            <button class="elv-close" title="关闭">✕</button>
+        </div>
+        <div class="elv-body">
+            <div class="elv-hint" id="elv-wire" style="display:none;color:#f0c674;background:#2a2416;border:1px solid #4a3a17;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
+            <div class="elv-warn" id="elv-warns" style="display:none;background:#2a1f16;border:1px solid #4a3517;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
+            <canvas class="elv-wave" id="elv-wave" height="110"></canvas>
+            <div class="elv-hint" id="elv-wavelabel"></div>
+            <div id="elv-diag" style="margin:2px 0 6px"></div>
+            <audio class="elv-fullaudio" controls preload="none"
+                src="/elv/project/${projectId}/audio" title="整曲试听"></audio>
+            <div class="elv-hint">红色竖线为切点；每段可试听，或点「▶ 连播」按顺序试听全部段。
+                「◎ 试听切点」播放切点前后各2秒，用于精听切点质量。修改简报后自动保存；
+                调整切点后需要重新「保存并确认」。</div>
+            <div id="elv-list"></div>
+            <div id="elv-final"></div>
+        </div>
+        <div class="elv-foot">
+            <button class="elv-btn primary" id="elv-approve">✓ 保存并确认</button>
+            <button class="elv-btn primary" id="elv-run">▶ 开始顺序生成</button>
+            <button class="elv-btn" id="elv-pause">⏸ 暂停</button>
+            <button class="elv-btn danger" id="elv-stop">⏹ 停止</button>
+            <button class="elv-btn" id="elv-assemble">🎞 仅重新合成</button>
+            <button class="elv-btn" id="elv-playall">▶ 连播全部分段</button>
+            <button class="elv-btn" id="elv-reveal">📂 成片位置</button>
+            <span class="elv-spacer"></span>
+            <label style="font-size:12px;color:#99a">失败自动重试
+                <input class="elv-mini" id="elv-retry" type="number" min="0" max="9" value="0" style="width:52px"> 次</label>
+            <label style="font-size:12px;color:#99a">视频输出节点：</label>
+            <select class="elv-select" id="elv-video"></select>
+            <div class="note" id="elv-note"></div>
+        </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector(".elv-close").onclick = () => { stopPlaylist(panel); closePanel(); };
+    overlay.addEventListener("mousedown", (e) => {
+        if (e.target === overlay) { stopPlaylist(panel); closePanel(); }
+    });
+
+    panel = { projectId, overlay, plan: null, polling: null, playlist: null,
+        statusEl: overlay.querySelector("#elv-status"),
+        listEl: overlay.querySelector("#elv-list"),
+        finalEl: overlay.querySelector("#elv-final"),
+        noteEl: overlay.querySelector("#elv-note"),
+        historyEl: overlay.querySelector("#elv-history"),
+        videoSelect: overlay.querySelector("#elv-video"),
+        retryInput: overlay.querySelector("#elv-retry"),
+        playBtn: overlay.querySelector("#elv-playall"),
+        btnApprove: overlay.querySelector("#elv-approve"),
+        btnRun: overlay.querySelector("#elv-run"),
+        btnPause: overlay.querySelector("#elv-pause"),
+        btnStop: overlay.querySelector("#elv-stop") };
+
+    panel.historyEl.onchange = () => {
+        if (panel.historyEl.value) openPanel(panel.historyEl.value);
+    };
+    panel.retryInput.onchange = async () => {
+        try {
+            await apiPost(`/elv/project/${panel.projectId}/settings`,
+                { auto_retry: +panel.retryInput.value || 0 });
+            panel.noteEl.textContent = "已保存：失败自动重试 " +
+                (+panel.retryInput.value || 0) + " 次。";
+        } catch (err) { alert(err.message); }
+    };
+    panel.playBtn.onclick = () =>
+        panel.playlist ? stopPlaylist(panel) : startPlaylist(panel);
+    overlay.querySelector("#elv-reveal").onclick = () =>
+        apiPost(`/elv/project/${panel.projectId}/reveal-final`, {})
+            .catch((e) => alert(e.message));
+
+    panel.btnApprove.onclick = async () => {
+        try {
+            panel.plan = await apiPost(`/elv/project/${panel.projectId}/approve`,
+                { revision: panel.plan.revision });
+            panel.noteEl.textContent = "已确认分段方案，可以开始顺序生成。";
+            refresh(panel);
+        } catch (err) { alert(err.message); }
+    };
+    panel.btnRun.onclick = async () => {
+        try {
+            const payload = await collectPromptPayload(panel);
+            await apiPost(`/elv/project/${panel.projectId}/run`, payload);
+            panel.noteEl.textContent = "顺序生成已启动；可随时暂停，关闭面板不影响运行。";
+            startPolling(panel);
+            refresh(panel);
+        } catch (err) { alert(err.message); }
+    };
+    panel.btnPause.onclick = () => apiPost(`/elv/project/${panel.projectId}/pause`)
+        .then(() => refresh(panel)).catch((e) => alert(e.message));
+    panel.btnStop.onclick = () => apiPost(`/elv/project/${panel.projectId}/stop`)
+        .then(() => refresh(panel)).catch((e) => alert(e.message));
+    overlay.querySelector("#elv-assemble").onclick = () =>
+        apiPost(`/elv/project/${panel.projectId}/assemble`)
+            .then(() => refresh(panel)).catch((e) => alert(e.message));
+
+    // 输出节点下拉：从画布收集
+    app.graphToPrompt().then(({ output }) => {
+        const options = [];
+        for (const [id, node] of Object.entries(output || {})) {
+            options.push(`<option value="${id}">${id}: ${esc(node.class_type)}</option>`);
+        }
+        panel.videoSelect.innerHTML = options.join("");
+        const prefer = [...panel.videoSelect.options]
+            .find((o) => /videocombine/i.test(o.text));
+        if (prefer) panel.videoSelect.value = prefer.value;
+    });
+
+    fillHistory(panel);
+    startPolling(panel);
+    refresh(panel);
+}
+
+function startPolling(panel) {
+    if (panel.polling) clearInterval(panel.polling);
+    panel.polling = setInterval(() => refresh(panel), 2000);
+}
+
+function closePanel() {
+    if (panel) {
+        if (panel.polling) clearInterval(panel.polling);
+        panel.overlay.remove();
+        panel = null;
+    }
+}
+
+// ---------------------------------------------------------------- 运镜规则编辑
+
+async function openRulesDialog() {
+    injectStyles();
+    let rules;
+    try {
+        rules = await apiGet("/elv/rules");
+    } catch (err) { alert("读取运镜规则失败：" + err.message); return; }
+    const overlay = document.createElement("div");
+    overlay.className = "elv-overlay";
+    overlay.innerHTML = `
+    <div class="elv-panel" style="width:min(760px,92vw)">
+        <div class="elv-head">
+            <h3>⚙ 运镜规则（唱歌模式）</h3>
+            <button class="elv-close" title="关闭">✕</button>
+        </div>
+        <div class="elv-body">
+            <div class="elv-hint">修改后点击保存；<b>重新分析并分段</b>后生效（已确认的项目不会自动变化）。
+                各字段含义：move_pool=各能量档可用运镜池；allowed_angles=可用机位角；
+                no_adjacent_same_family=相邻段不同类运镜；alternate_lateral_direction=横移方向交替；
+                avoid_direct_axis_cross=避免直接跨轴线；performance_text=三档表演节奏文案。
+                可用运镜值：${["truck_left", "truck_right", "arc_left", "arc_right", "dolly_in", "dolly_out", "micro_reframe"].join(" / ")}</div>
+            <textarea class="elv-brief" id="elv-rules-text" style="min-height:320px;font-family:Consolas,monospace">${esc(JSON.stringify(rules, null, 2))}</textarea>
+            <div class="elv-warn" id="elv-rules-err"></div>
+        </div>
+        <div class="elv-foot">
+            <button class="elv-btn primary" id="elv-rules-save">💾 保存规则</button>
+            <button class="elv-btn" id="elv-rules-reset">↺ 恢复默认</button>
+            <span class="elv-spacer"></span>
+            <span class="elv-hint">保存位置：ComfyUI 用户目录/EasyLongVideo/camera_rules.json</span>
+        </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector(".elv-close").onclick = () => overlay.remove();
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector("#elv-rules-save").onclick = async () => {
+        try {
+            const parsed = JSON.parse(overlay.querySelector("#elv-rules-text").value);
+            rules = await apiPost("/elv/rules", parsed);
+            overlay.querySelector("#elv-rules-text").value = JSON.stringify(rules, null, 2);
+            overlay.querySelector("#elv-rules-err").textContent =
+                "✓ 已保存。点击节点上的「重新分析并分段」后生效。";
+        } catch (err) {
+            overlay.querySelector("#elv-rules-err").textContent = "✖ " + err.message;
+        }
+    };
+    overlay.querySelector("#elv-rules-reset").onclick = async () => {
+        try {
+            rules = await apiPost("/elv/rules/reset", {});
+            overlay.querySelector("#elv-rules-text").value = JSON.stringify(rules, null, 2);
+            overlay.querySelector("#elv-rules-err").textContent = "✓ 已恢复默认（尚未保存前可继续编辑）。";
+        } catch (err) {
+            overlay.querySelector("#elv-rules-err").textContent = "✖ " + err.message;
+        }
+    };
+}
+
+// ---------------------------------------------------------------- 节点进度
+
+function findNodeByProject(projectId) {
+    let found = null;
+    for (const node of Object.values(app.graph._nodes || {})) {
+        if (node.type !== NODE_TYPE) continue;
+        const widget = node.widgets?.find((w) => w.name === "project_id");
+        if (widget?.value === projectId) { found = node; break; }
+        if (!found && widget) found = node; // 兜底：第一个 EasyLVUnified
+    }
+    return found;
+}
+
+function setProgress(projectId, text) {
+    const node = findNodeByProject(projectId);
+    if (!node) return;
+    let w = node.widgets?.find((w) => w.name === "elv_progress");
+    if (!w) {
+        w = node.addWidget("button", text, null, () => {});
+        w.name = "elv_progress";
+        w.serialize = false;
+    }
+    w.label = text;
+    w.name = "elv_progress";
+    if (w.onPropertyChanged) w.onPropertyChanged("label", text);
+    app.graph.setDirtyCanvas(true, false);
+}
+
+api.addEventListener("elv-segment", ({ detail }) => {
+    if (!detail?.project_id) return;
+    const { project_id, segment_index, total } = detail;
+    setProgress(project_id, `🎬 正在生成第 ${segment_index + 2}/${total} 段…（已完成 ${segment_index + 1}）`);
+    if (panel && panel.projectId === project_id) refresh(panel);
+});
+api.addEventListener("elv-retry", ({ detail }) => {
+    if (!detail?.project_id) return;
+    const { project_id, segment_index, attempt, max_retry, error } = detail;
+    setProgress(project_id, `⚠ 第 ${segment_index + 1} 段失败，自动重试 ${attempt}/${max_retry}…`);
+});
+api.addEventListener("elv-final", ({ detail }) => {
+    if (!detail?.project_id) return;
+    setProgress(detail.project_id, "✅ 全部完成，成片已合成");
+    if (panel && panel.projectId === detail.project_id) refresh(panel);
+});
+
+// ---------------------------------------------------------------- 扩展注册
+
+async function loadWaveAndMaybeOpen(node, projectId) {
+    openPanel(projectId);
+    try {
+        const analysis = await apiGet(`/elv/project/${projectId}/analysis`);
+        const plan = await apiGet(`/elv/project/${projectId}`);
+        if (panel) {
+            panel.plan = plan;
+            panel.analysis = analysis;
+            drawWave(panel.overlay.querySelector("#elv-wave"), analysis, plan);
+            const wl = panel.overlay.querySelector("#elv-wavelabel");
+            if (wl) {
+                const dual = !!analysis.waveform?.vocals;
+                wl.textContent = dual
+                    ? "上轨：原曲（含伴奏） · 下轨：人声（口型驱动用） · 红线：切点 · 黄标：分段"
+                    : "单轨波形（未分离人声） · 红线：切点 · 黄标：分段";
+            }
+            renderSegments(panel.listEl, plan);
+            bindSegmentEvents(panel);
+        }
+    } catch (err) { /* 忽略 */ }
+}
+
+app.registerExtension({
+    name: "EasyLongVideo.Panel",
+    beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData?.name !== NODE_TYPE) return;
+        const onExecuted = nodeType.prototype.onExecuted;
+        nodeType.prototype.onExecuted = function (message) {
+            onExecuted?.apply(this, arguments);
+            const ids = message?.elv_project;
+            if (ids?.length) {
+                loadWaveAndMaybeOpen(this, String(ids[0]));
+                const widget = this.widgets?.find((w) => w.name === "project_id");
+                if (widget) widget.value = String(ids[0]);
+            }
+        };
+        const onNodeCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            onNodeCreated?.apply(this, arguments);
+            const self = this;
+            setTimeout(() => {
+                // 参数中文名
+                for (const w of self.widgets || []) {
+                    if (CN_LABELS[w.name]) w.label = CN_LABELS[w.name];
+                }
+                // 参数预设下拉
+                const preset = self.addWidget("combo", "⚙ 参数预设", "自定义", (v) => {
+                    if (v === "自定义" || !PRESETS[v]) return;
+                    for (const [name, value] of Object.entries(PRESETS[v])) {
+                        const w = self.widgets?.find((x) => x.name === name);
+                        if (w) { w.value = value; }
+                    }
+                    app.graph.setDirtyCanvas(true, false);
+                }, { values: Object.keys(PRESETS).concat(["自定义"]) });
+                preset.serialize = false;
+                const makeBtn = (label, handler) => {
+                    const btn = self.addWidget("button", label, null, handler);
+                    btn.serialize = false;
+                    return btn;
+                };
+                makeBtn("⚙ 运镜规则：查看与修改", openRulesDialog);
+                makeBtn("🔄 重新分析并分段", () => {
+                    const widget = self.widgets?.find((w) => w.name === "project_id");
+                    if (widget) widget.value = "";
+                    alert("已重置项目编号。\n请点击 ComfyUI 的「运行 (Queue)」，将按当前参数重新分析并分段。");
+                });
+                makeBtn("📋 打开分段与生成控制", () => {
+                    const widget = self.widgets?.find((w) => w.name === "project_id");
+                    if (widget?.value) loadWaveAndMaybeOpen(self, widget.value);
+                    else alert("请先运行一次节点完成音频分析。");
+                });
+            }, 0);
+        };
+    },
+});
+
+console.log("[EasyLongVideo] 前端扩展已加载");

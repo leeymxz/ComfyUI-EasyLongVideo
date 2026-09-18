@@ -1,0 +1,17 @@
+[project]
+name = "comfyui-easylongvideo"
+description = "Zero-dependency long-audio segmented video generation for ComfyUI: auto segmentation, camera briefs, sequential generation and final assembly."
+version = "0.1.0"
+license = { text = "MIT" }
+dependencies = []
+classifiers = [
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/your-name/ComfyUI-EasyLongVideo"
+
+[tool.comfy]
+PublisherId = "easylongvideo"
+DisplayName = "EasyLongVideo 长视频工作台"
+Icon = ""
