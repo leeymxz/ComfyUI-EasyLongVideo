@@ -4,8 +4,10 @@
 所有端点挂在 /elv/ 前缀下，错误统一返回 {"error": "..."}。
 """
 import asyncio
+import time
 
-from . import lv_camera, lv_controller, lv_ffmpeg, lv_segment, lv_store
+from . import lv_camera, lv_controller, lv_ffmpeg, lv_segment, lv_separate, lv_store
+from .lv_audio import read_wav, write_wav
 
 
 def register_routes():
@@ -118,7 +120,22 @@ def register_routes():
                 if not 0 <= idx < len(segments):
                     raise ValueError("分段编号超出范围。")
                 kind = op.get("op")
-                if kind == "brief":
+                if kind == "move_boundary":
+                    # 拖拽切点：boundary 为切点编号（1..len-1），移动共享边界
+                    bid = int(op["boundary"])
+                    at = float(op["at"])
+                    if not 1 <= bid < len(segments):
+                        raise ValueError("切点编号超出范围。")
+                    point = int(round(at * sr))
+                    left, right = segments[bid - 1], segments[bid]
+                    min_gap = int(3.0 * sr)
+                    if not left["start_sample"] + min_gap <= point <= right["end_sample"] - min_gap:
+                        raise ValueError("切点位置需保证两侧分段至少 3 秒。")
+                    left["end_sample"] = point
+                    right["start_sample"] = point
+                    left["warnings"] = ["手动拖拽切点，请试听"]
+                    right["warnings"] = ["手动拖拽切点，请试听"]
+                elif kind == "brief":
                     segments[idx]["brief"] = str(op.get("brief", ""))[:8000]
                     segments[idx]["brief_edited"] = True
                 elif kind == "reset_brief":
@@ -352,6 +369,128 @@ def register_routes():
         if not str(video_path.resolve()).startswith(str(output_root)):
             raise ValueError("视频文件不在 output 目录内，拒绝访问。")
         return web.FileResponse(video_path)
+
+    @routes.post("/elv/project/{project_id}/re-separate")
+    @endpoint
+    async def re_separate(request):
+        """重新分离人声（不改变分段切点，段音频输出即时更新）。"""
+        import asyncio
+        root, pid = lv_store.projects_root(), request.match_info["project_id"]
+        with lv_store.LOCK:
+            plan = lv_store.read_plan(root, pid)
+            if plan.get("separation_status") == "running":
+                raise ValueError("分离任务进行中，请等待完成。")
+            if plan.get("mode") != "singing":
+                raise ValueError("口播模式没有人声分离需求。")
+            plan["separation_status"] = "running"
+            plan["separation_error"] = ""
+            lv_store.write_plan(root, plan)
+
+        async def job():
+            try:
+                def work():
+                    directory = lv_store.project_dir(root, pid)
+                    mix, sr = read_wav(lv_store.audio_file(directory, "source.wav"))
+                    out = lv_separate.separate_vocals(
+                        mix, sr, lv_store.models_root() / "hub", device="auto",
+                        interrupt_check=lv_asr.interrupt_guard())
+                    return out, mix, sr
+
+                out, mix, sr = await asyncio.to_thread(work)
+                with lv_store.LOCK:
+                    plan = lv_store.read_plan(root, pid)
+                    directory = lv_store.project_dir(root, pid)
+                    if out is None or not len(out):
+                        plan["separation_status"] = "failed"
+                        plan["separation_error"] = "分离未产出结果（模型加载或推理失败）。"
+                    else:
+                        write_wav(lv_store.audio_file(directory, "vocals.wav"), out, sr)
+                        plan["separation"] = "HTDemucs 自动分离（重新分离）"
+                        plan["separation_status"] = "done"
+                        v_hop = max(1, int(sr * 0.05))
+                        v_blocks = len(out) // v_hop
+                        if v_blocks > 0:
+                            import numpy as _np
+                            v_mono = out.mean(axis=1)
+                            v_rms = _np.sqrt((v_mono[:v_blocks * v_hop]
+                                              .reshape(v_blocks, v_hop) ** 2).mean(axis=1))
+                            plan["vocals_rms_p50"] = float(_np.percentile(v_rms, 50))
+                        lv_store.write_plan(root, plan)
+            except Exception as exc:
+                with lv_store.LOCK:
+                    plan = lv_store.read_plan(root, pid)
+                    plan["separation_status"] = "failed"
+                    plan["separation_error"] = str(exc)[:400]
+                    lv_store.write_plan(root, plan)
+
+        asyncio.create_task(job())
+        return web.json_response({"started": True})
+
+    @routes.post("/elv/project/{project_id}/segment/{index}/re-separate")
+    @endpoint
+    async def segment_reseparate(request):
+        """只对单个分段重新分离人声（±5 秒上下文提升边缘质量）。
+
+        结果写回 vocals.wav 的该段区间；其他段不受影响。切点不变。
+        """
+        import asyncio
+        root, pid = lv_store.projects_root(), request.match_info["project_id"]
+        idx = int(request.match_info["index"])
+        plan = lv_store.read_plan(root, pid)
+        if not 0 <= idx < len(plan["segments"]):
+            raise ValueError("分段编号超出范围。")
+        if plan.get("separation_status") == "running":
+            raise ValueError("已有分离任务进行中。")
+        row = plan["segments"][idx]
+        row["resep_status"] = "running"
+        lv_store.write_plan(root, pid and plan)
+
+        async def job():
+            try:
+                def work():
+                    directory = lv_store.project_dir(root, pid)
+                    sr = int(plan["sample_rate"])
+                    total = int(plan["samples"])
+                    ctx = sr * 5  # 上下文：Demucs 对边缘效应敏感
+                    a = max(0, row["start_sample"] - ctx)
+                    b = min(total, row["end_sample"] + ctx)
+                    seg_mix, sr2 = read_wav(lv_store.audio_file(directory, "source.wav"),
+                                            start=a, stop=b)
+                    out = lv_separate.separate_vocals(
+                        seg_mix, sr2, lv_store.models_root() / "hub", device="auto")
+                    return out, sr2, a, b, total, directory
+
+                out, sr2, a, b, total, directory = await asyncio.to_thread(work)
+                with lv_store.LOCK:
+                    plan2 = lv_store.read_plan(root, pid)
+                    row2 = plan2["segments"][idx]
+                    if out is None or not len(out):
+                        row2["resep_status"] = "failed"
+                        lv_store.write_plan(root, plan2)
+                        return
+                    # 写回该段区间：读全量 vocals -> 替换 -> 原子写回
+                    old_vocals, sr3 = read_wav(lv_store.audio_file(directory, "vocals.wav"))
+                    if sr3 != sr2:
+                        raise ValueError("采样率异常。")
+                    inner_start = row2["start_sample"] - a
+                    inner_end = row2["end_sample"] - a
+                    new_vocals = old_vocals.copy()
+                    new_vocals[row2["start_sample"]:row2["end_sample"]] = \
+                        out[inner_start:inner_end]
+                    write_wav(lv_store.audio_file(directory, "vocals.wav"), new_vocals, sr2)
+                    row2["resep_status"] = "done"
+                    row2["resep_at"] = time.time()
+                    lv_store.write_plan(root, plan2)
+            except Exception as exc:
+                with lv_store.LOCK:
+                    plan2 = lv_store.read_plan(root, pid)
+                    row2 = plan2["segments"][idx]
+                    row2["resep_status"] = "failed"
+                    row2["resep_error"] = str(exc)[:300]
+                    lv_store.write_plan(root, plan2)
+
+        asyncio.create_task(job())
+        return web.json_response({"started": True, "index": idx})
 
     @routes.post("/elv/project/{project_id}/reveal-final")
     @endpoint

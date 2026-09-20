@@ -39,7 +39,28 @@ def _interrupt_check():
         pass
 
 
-def _segment_audio(directory, row, sr, fps):
+def _apply_vocal_gate(vocals, sr, ref_rms):
+    """间奏/泄漏压制：人声块 RMS 低于演唱参考值约 22% 时渐变静音。
+
+    Demucs 分离的间奏段会残留和声/混响/呼吸声，H3 会把它们当人声驱动
+    口型（人物在间奏开口）。加载段音频时在输出端做平滑能量门限，
+    让无演唱部分近似无声。ref_rms 为分析时统计的演唱中位 RMS。
+    """
+    mono = vocals.mean(axis=1)
+    hop = max(1, int(sr * 0.05))
+    n = len(mono) // hop
+    if n < 4:
+        return vocals
+    rms = np.sqrt((mono[:n * hop].reshape(n, hop) ** 2).mean(axis=1))
+    thr = max(float(ref_rms) * 0.22, 0.004)
+    mask = (rms > thr).astype(np.float32)
+    kernel = np.ones(7) / 7.0
+    mask = np.convolve(np.pad(mask, 3, mode="edge"), kernel, mode="valid")[:n]
+    gain = np.repeat(np.clip(mask, 0.0, 1.0), hop)[: len(vocals)]
+    return (vocals * gain[:, None]).astype(np.float32)
+
+
+def _segment_audio(directory, row, sr, fps, plan=None):
     """读取某段音频并补齐到整帧采样数，返回 (source, vocals)。"""
     target = lv_segment.padded_samples(row["generation_frames"], sr, fps)
     outputs = []
@@ -55,7 +76,12 @@ def _segment_audio(directory, row, sr, fps):
         if len(audio) < target:
             audio = np.pad(audio, ((0, target - len(audio)), (0, 0)))
         outputs.append(audio)
-    return outputs[0], outputs[1]
+    source, vocals = outputs[0], outputs[1]
+    # 唱歌模式：间奏泄漏压制（人声轨中弱于演唱水平的部分渐变静音）
+    if plan is not None and plan.get("mode") == "singing" \
+            and plan.get("vocals_gate", True) and plan.get("vocals_rms_p50"):
+        vocals = _apply_vocal_gate(vocals, sr, float(plan["vocals_rms_p50"]))
+    return source, vocals
 
 
 class EasyLVUnified:
@@ -206,6 +232,16 @@ class EasyLVUnified:
         if cursor != len(mix):
             raise AssertionError("分段覆盖检查失败（未覆盖到结尾）。")
 
+        # 演唱水平参考（间奏门限阈值用）：人声逐块 RMS 的中位数
+        v_hop = max(1, int(sr * 0.05))
+        v_blocks = len(voice) // v_hop
+        if v_blocks > 0:
+            v_mono = voice.mean(axis=1)
+            v_rms = np.sqrt((v_mono[:v_blocks * v_hop].reshape(v_blocks, v_hop) ** 2).mean(axis=1))
+            vocals_rms_p50 = float(np.percentile(v_rms, 50))
+        else:
+            vocals_rms_p50 = 0.0
+
         plan = {
             "id": project_id, "schema": lv_store.SCHEMA,
             "revision": 1, "created": time.time(),
@@ -217,6 +253,8 @@ class EasyLVUnified:
                     "used": transcript is not None,
                     "model": lv_asr.resolve_model(asr_model) if transcript else None},
             "separation": separation_note or "未分离（原曲即人声）",
+            "vocals_gate": True,
+            "vocals_rms_p50": vocals_rms_p50,
             "camera_activity": camera_activity, "widest_framing": widest_framing,
             "segments": rows,
             "approved": False, "approved_fingerprint": None,
@@ -242,7 +280,7 @@ class EasyLVUnified:
         row = plan["segments"][int(segment_index)]
         directory = lv_store.project_dir(root, project_id)
         source, vocals = _segment_audio(directory, row, int(plan["sample_rate"]),
-                                        int(plan.get("fps") or 24))
+                                        int(plan.get("fps") or 24), plan)
         prefix = f"EasyLongVideo/projects/{project_id}/takes/seg_{int(segment_index):04d}"
         return (_torch_audio(source, int(plan["sample_rate"])),
                 _torch_audio(vocals, int(plan["sample_rate"])),

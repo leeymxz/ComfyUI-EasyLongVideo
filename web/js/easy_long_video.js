@@ -87,6 +87,13 @@ function injectStyles() {
         border-radius: 6px; padding: 5px 8px; font-size: 12px; width: 90px; }
     .elv-close { background: transparent; border: none; color: #999; font-size: 20px;
         cursor: pointer; line-height: 1; }
+    .elv-errorbox { background: #2a1616; border: 1px solid #6a2a2a; border-radius: 8px;
+        padding: 8px 10px; margin: 6px 0; }
+    .elv-errorbox-head { display: flex; align-items: center; gap: 8px; }
+    .elv-errorbox-head .elv-btn { padding: 2px 10px; font-size: 12px; }
+    .elv-errorbox pre { max-height: 170px; overflow-y: auto; white-space: pre-wrap;
+        word-break: break-all; font-size: 11px; color: #ffb0b0; margin: 6px 0 0;
+        line-height: 1.5; scrollbar-width: thin; }
     `;
     document.head.appendChild(style);
 }
@@ -112,7 +119,7 @@ const esc = (t) => String(t ?? "").replace(/[&<>"]/g,
 
 // ---------------------------------------------------------------- 波形
 
-function drawWave(canvas, analysis, plan) {
+function drawWave(canvas, analysis, plan, dragCut) {
     if (!canvas || !analysis?.waveform) return;
     const ctx = canvas.getContext("2d");
     const w = canvas.width = canvas.clientWidth * devicePixelRatio;
@@ -121,6 +128,9 @@ function drawWave(canvas, analysis, plan) {
     const dur = analysis.duration || plan.duration || 1;
     const dual = !!analysis.waveform.vocals;
     const half = dual ? h / 2 : h;
+    // 记录切点时间（秒），供拖拽命中
+    canvas._cutTimes = (plan.segments || []).slice(1)
+        .map((r) => r.start_sample / plan.sample_rate);
 
     function drawTrack(peaks, color, y0, hh, alpha) {
         ctx.fillStyle = color;
@@ -132,6 +142,50 @@ function drawWave(canvas, analysis, plan) {
         });
         ctx.globalAlpha = 1;
     }
+    // 上：原曲（蓝）；下：人声（绿）
+    drawTrack(analysis.waveform.original || [], "#3d5a80", 0, half, 0.95);
+    if (dual) drawTrack(analysis.waveform.vocals, "#2e7d5b", half, h - half, 0.95);
+
+    // 切点线 + 拖拽手柄 + 段标签
+    (plan.segments || []).forEach((row, i) => {
+        const x0 = (row.start_sample / plan.sample_rate) / dur * w;
+        const dragging = dragCut && dragCut.boundary === i;
+        if (i > 0) {
+            const px = dragging ? (dragCut.t / dur) * w : x0;
+            ctx.fillStyle = dragging ? "#ffd54a" : "#e05656";
+            ctx.fillRect(px - devicePixelRatio, 0, Math.max(2, 2 * devicePixelRatio), h);
+            // 手柄圆点
+            ctx.beginPath();
+            ctx.arc(px, 9 * devicePixelRatio, 6 * devicePixelRatio, 0, Math.PI * 2);
+            ctx.fillStyle = dragging ? "#ffd54a" : "#ff8080";
+            ctx.fill();
+            ctx.strokeStyle = "#222"; ctx.stroke();
+            if (dragging) {
+                ctx.font = `${12 * devicePixelRatio}px sans-serif`;
+                ctx.fillStyle = "#ffd54a";
+                const tt = `${dragCut.t.toFixed(2)}s（松开保存）`;
+                const tx = Math.min(px + 10 * devicePixelRatio, w - 140 * devicePixelRatio);
+                ctx.fillText(tt, tx, 14 * devicePixelRatio);
+            }
+        }
+        if (i > 0 || true) {
+            const label = `第${i + 1}段`;
+            ctx.font = `${11 * devicePixelRatio}px sans-serif`;
+            const tw = ctx.measureText(label).width;
+            const lx = Math.min(x0 + 4 * devicePixelRatio, w - tw - 4);
+            const ly = dragging && i > 0 ? 24 * devicePixelRatio : 4;
+            ctx.fillStyle = "rgba(20,20,24,0.75)";
+            ctx.fillRect(lx - 3, ly, tw + 6, 15 * devicePixelRatio);
+            ctx.fillStyle = "#ffd98a";
+            ctx.fillText(label, lx, ly + 11 * devicePixelRatio);
+        }
+    });
+    if (dual) {
+        ctx.font = `${10 * devicePixelRatio}px sans-serif`;
+        ctx.fillStyle = "#7fa8d9"; ctx.fillText("原曲", 6, half - 6);
+        ctx.fillStyle = "#6fd0a0"; ctx.fillText("人声", 6, h - 6);
+    }
+}
     // 上：原曲（蓝）；下：人声（绿）
     drawTrack(analysis.waveform.original || [], "#3d5a80", 0, half, 0.95);
     if (dual) drawTrack(analysis.waveform.vocals, "#2e7d5b", half, h - half, 0.95);
@@ -200,6 +254,7 @@ function renderSegments(container, plan) {
                 <span class="elv-spacer"></span>
                 <span class="elv-badge ${job.status === "completed" ? "ok" : job.status === "failed" ? "err" : ""}">${esc(job.status || "pending")}</span>
                 <button class="elv-btn" data-act="cue" data-i="${i}" title="试听切点前后各2秒">◎ 试听切点</button>
+                <button class="elv-btn" data-act="resegsep" data-i="${i}" ${row.resep_status === "running" ? "disabled" : ""} title="只对本段重新分离人声（±5秒上下文）">🎤 重分离本段${row.resep_status === "running" ? "中…" : ""}</button>
                 <button class="elv-btn" data-act="redo" data-i="${i}" ${plan.run_status === "running" ? "disabled" : ""}>重做本段</button>
                 <button class="elv-btn" data-act="merge" data-i="${i}" ${i >= plan.segments.length - 1 ? "disabled" : ""}>并入下一段</button>
                 <button class="elv-btn" data-act="split" data-i="${i}">✂ 拆分</button>
@@ -218,6 +273,7 @@ function renderSegments(container, plan) {
             </div>
             <textarea class="elv-brief" data-i="${i}">${esc(row.brief)}</textarea>
             ${(row.warnings || []).map((wn) => `<div class="elv-warn">⚠ ${esc(wn)}</div>`).join("")}
+            ${row.resep_error ? `<div class="elv-warn">✖ 本段重分离失败：${esc(row.resep_error)}</div>` : ""}
             ${job.error ? `<div class="elv-warn">✖ ${esc(job.error)}</div>` : ""}`;
         container.appendChild(div);
     });
@@ -347,6 +403,13 @@ function bindSegmentEvents(panel) {
                             { index: i });
                         refresh(panel);
                     } catch (err) { alert(err.message); }
+                } else if (btn.dataset.act === "resegsep") {
+                    try {
+                        await apiPost(`/elv/project/${panel.projectId}/segment/${i}/re-separate`, {});
+                        panel.noteEl.textContent =
+                            `第 ${i + 1} 段人声重分离已启动（几秒完成），完成后重做本段即可用新人声。`;
+                        refresh(panel);
+                    } catch (err) { alert(err.message); }
                 } else if (btn.dataset.act === "cue") {
                     // 试听切点前后各 2 秒（切点质量精听）
                     const plan = panel.plan;
@@ -396,9 +459,40 @@ async function refresh(panel) {
     try {
         const plan = await apiGet(`/elv/project/${panel.projectId}`);
         panel.plan = plan;
+        const sepStatus = plan.separation_status === "running" ? "分离中…"
+            : plan.separation_status === "failed" ? "分离失败"
+            : plan.separation_status === "done" ? "已完成重分离" : "";
         panel.statusEl.innerHTML = statusBadge(plan) +
-            (plan.separation ? ` <span class="elv-badge">人声:${esc(plan.separation)}</span>` : "") +
-            (plan.error ? ` <span class="elv-warn">${esc(plan.error)}</span>` : "");
+            (plan.separation ? ` <span class="elv-badge">人声:${esc(plan.separation)}${sepStatus ? " · " + sepStatus : ""}</span>` : "");
+        if (panel.resSepBtn) {
+            panel.resSepBtn.style.display = plan.mode === "singing" ? "inline-block" : "none";
+            panel.resSepBtn.disabled = plan.separation_status === "running";
+        }
+        const sepErr = panel.overlay.querySelector("#elv-warns");
+        if (sepErr && plan.separation_error) {
+            sepErr.style.display = "block";
+            sepErr.innerHTML = "⚠ 人声分离失败：" + esc(plan.separation_error);
+        }
+        // 错误详情：固定高度可滚动框 + 复制按钮（不再撑爆面板）
+        const errBox = panel.overlay.querySelector("#elv-errorbox");
+        if (errBox) {
+            if (plan.error) {
+                errBox.style.display = "block";
+                errBox.querySelector("#elv-error-text").textContent = plan.error;
+                errBox.querySelector("#elv-error-copy").onclick = async () => {
+                    try {
+                        await navigator.clipboard.writeText(plan.error || "");
+                        errBox.querySelector("#elv-error-copy").textContent = "✓ 已复制";
+                        setTimeout(() => {
+                            const b = errBox.querySelector("#elv-error-copy");
+                            if (b) b.textContent = "📋 复制全部错误";
+                        }, 1500);
+                    } catch (err) { alert("复制失败：" + err.message); }
+                };
+            } else {
+                errBox.style.display = "none";
+            }
+        }
         const warnEl = panel.overlay.querySelector("#elv-warns");
         if (warnEl) {
             const warns = plan.warnings || [];
@@ -474,6 +568,15 @@ function openPanel(projectId) {
         <div class="elv-body">
             <div class="elv-hint" id="elv-wire" style="display:none;color:#f0c674;background:#2a2416;border:1px solid #4a3a17;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
             <div class="elv-warn" id="elv-warns" style="display:none;background:#2a1f16;border:1px solid #4a3517;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
+            <div class="elv-errorbox" id="elv-errorbox" style="display:none">
+                <div class="elv-errorbox-head">
+                    <span class="elv-badge err">失败详情</span>
+                    <span class="elv-hint" style="margin:0">错误摘要见上方；完整信息可滚动查看</span>
+                    <span class="elv-spacer"></span>
+                    <button class="elv-btn" id="elv-error-copy">📋 复制全部错误</button>
+                </div>
+                <pre id="elv-error-text"></pre>
+            </div>
             <canvas class="elv-wave" id="elv-wave" height="110"></canvas>
             <div class="elv-hint" id="elv-wavelabel"></div>
             <div id="elv-diag" style="margin:2px 0 6px"></div>
@@ -491,6 +594,7 @@ function openPanel(projectId) {
             <button class="elv-btn" id="elv-pause">⏸ 暂停</button>
             <button class="elv-btn danger" id="elv-stop">⏹ 停止</button>
             <button class="elv-btn" id="elv-assemble">🎞 仅重新合成</button>
+            <button class="elv-btn" id="elv-reseparate" style="display:none">🎤 重新分离人声</button>
             <button class="elv-btn" id="elv-playall">▶ 连播全部分段</button>
             <button class="elv-btn" id="elv-reveal">📂 成片位置</button>
             <span class="elv-spacer"></span>
@@ -524,6 +628,58 @@ function openPanel(projectId) {
     panel.historyEl.onchange = () => {
         if (panel.historyEl.value) openPanel(panel.historyEl.value);
     };
+
+    // 波形切点拖拽：mousedown 命中切点手柄 → 移动 → mouseup 保存
+    const waveCanvas = overlay.querySelector("#elv-wave");
+    let drag = null;
+    const cutFromX = (clientX) => {
+        const rect = waveCanvas.getBoundingClientRect();
+        return Math.max(0, Math.min(panel.plan.duration,
+            ((clientX - rect.left) / rect.width) * panel.plan.duration));
+    };
+    waveCanvas.addEventListener("mousedown", (e) => {
+        if (!panel.plan || !panel.plan.approved === undefined) { /* 允许 draft 也可拖 */ }
+        if (!panel.plan) return;
+        const rect = waveCanvas.getBoundingClientRect();
+        const t = cutFromX(e.clientX);
+        const tol = (12 / rect.width) * panel.plan.duration; // 12px 命中容差
+        let best = null;
+        (waveCanvas._cutTimes || []).forEach((ct, i) => {
+            const d = Math.abs(ct - t);
+            if (d < tol && (!best || d < best.d)) best = { boundary: i + 1, t: ct, d };
+        });
+        if (best) {
+            drag = best;
+            e.preventDefault();
+            panel.noteEl.textContent = "拖动切点中…松开保存（两侧分段保持至少 3 秒）";
+        }
+    });
+    waveCanvas.addEventListener("mousemove", (e) => {
+        if (!drag) return;
+        drag.t = cutFromX(e.clientX);
+        drawWave(waveCanvas, panel.analysis, panel.plan, drag);
+    });
+    window.addEventListener("mouseup", () => {
+        if (!drag) return;
+        const d = drag;
+        drag = null;
+        if (!panel.plan) return;
+        const segs = panel.plan.segments;
+        const sr = panel.plan.sample_rate;
+        const left = segs[d.boundary - 1], right = segs[d.boundary];
+        const lo = (left.start_sample + 3 * sr) / sr;
+        const hi = (right.end_sample - 3 * sr) / sr;
+        const t = Math.round(Math.max(lo, Math.min(hi, d.t)) * 1000) / 1000;
+        apiPost(`/elv/project/${panel.projectId}/edit`, {
+            revision: panel.plan.revision,
+            operations: [{ op: "move_boundary", boundary: d.boundary, at: t }],
+        }).then((p) => {
+            panel.plan = p;
+            panel.noteEl.textContent =
+                `切点已移至 ${t.toFixed(2)}s。已自动取消确认状态，请重新「保存并确认」。`;
+            refresh(panel);
+        }).catch((err) => { alert(err.message); refresh(panel); });
+    });
     panel.retryInput.onchange = async () => {
         try {
             await apiPost(`/elv/project/${panel.projectId}/settings`,
@@ -532,8 +688,18 @@ function openPanel(projectId) {
                 (+panel.retryInput.value || 0) + " 次。";
         } catch (err) { alert(err.message); }
     };
-    panel.playBtn.onclick = () =>
-        panel.playlist ? stopPlaylist(panel) : startPlaylist(panel);
+        panel.playBtn.onclick = () =>
+            panel.playlist ? stopPlaylist(panel) : startPlaylist(panel);
+        panel.resSepBtn = overlay.querySelector("#elv-reseparate");
+        panel.resSepBtn.onclick = async () => {
+            if (!confirm("重新分离人声？切点保持不变，段音频输出将自动更新\n" +
+                    "（如需按新人声重算切点，请之后点「🔄 重新分析并分段」）。")) return;
+            try {
+                await apiPost(`/elv/project/${panel.projectId}/re-separate`, {});
+                panel.noteEl.textContent = "人声分离已启动（约 1~2 分钟），面板状态会显示进度。";
+                refresh(panel);
+            } catch (err) { alert(err.message); }
+        };
     overlay.querySelector("#elv-reveal").onclick = () =>
         apiPost(`/elv/project/${panel.projectId}/reveal-final`, {})
             .catch((e) => alert(e.message));
