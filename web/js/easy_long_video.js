@@ -3,7 +3,10 @@
 //       历史项目 / 顺序生成控制 / 节点实时进度
 // [v2] 使用 window.comfyAPI 全局（ComfyUI 官方新写法），不再依赖 ESM import，
 //      对动态加载/缓存损坏免疫。
-const { app, api } = window.comfyAPI;
+//      注意结构：实例在 window.comfyAPI.api.api / .app.app（两层）。
+const _comfyGlobal = window.comfyAPI || {};
+const app = _comfyGlobal.app?.app ?? null;
+const api = _comfyGlobal.api?.api ?? null;
 
 const NODE_TYPE = "EasyLVUnified";
 let stylesInjected = false;
@@ -817,22 +820,31 @@ function setProgress(projectId, text) {
     app.graph.setDirtyCanvas(true, false);
 }
 
-api.addEventListener("elv-segment", ({ detail }) => {
-    if (!detail?.project_id) return;
-    const { project_id, segment_index, total } = detail;
-    setProgress(project_id, `🎬 正在生成第 ${segment_index + 2}/${total} 段…（已完成 ${segment_index + 1}）`);
-    if (panel && panel.projectId === project_id) refresh(panel);
-});
-api.addEventListener("elv-retry", ({ detail }) => {
-    if (!detail?.project_id) return;
-    const { project_id, segment_index, attempt, max_retry, error } = detail;
-    setProgress(project_id, `⚠ 第 ${segment_index + 1} 段失败，自动重试 ${attempt}/${max_retry}…`);
-});
-api.addEventListener("elv-final", ({ detail }) => {
-    if (!detail?.project_id) return;
-    setProgress(detail.project_id, "✅ 全部完成，成片已合成");
-    if (panel && panel.projectId === detail.project_id) refresh(panel);
-});
+// 节点实时进度（websocket 事件推送；api 不可用时自动降级为面板轮询）
+try {
+    if (api && typeof api.addEventListener === "function") {
+        api.addEventListener("elv-segment", ({ detail }) => {
+            if (!detail?.project_id) return;
+            const { project_id, segment_index, total } = detail;
+            setProgress(project_id, `🎬 正在生成第 ${segment_index + 2}/${total} 段…（已完成 ${segment_index + 1}）`);
+            if (panel && panel.projectId === project_id) refresh(panel);
+        });
+        api.addEventListener("elv-retry", ({ detail }) => {
+            if (!detail?.project_id) return;
+            const { project_id, segment_index, attempt, max_retry, error } = detail;
+            setProgress(project_id, `⚠ 第 ${segment_index + 1} 段失败，自动重试 ${attempt}/${max_retry}…`);
+        });
+        api.addEventListener("elv-final", ({ detail }) => {
+            if (!detail?.project_id) return;
+            setProgress(detail.project_id, "✅ 全部完成，成片已合成");
+            if (panel && panel.projectId === detail.project_id) refresh(panel);
+        });
+    } else {
+        console.warn("[EasyLongVideo] api 实例不可用，进度推送降级为面板轮询。");
+    }
+} catch (err) {
+    console.warn("[EasyLongVideo] 事件监听注册失败（不影响面板）:", err);
+}
 
 // ---------------------------------------------------------------- 扩展注册
 
