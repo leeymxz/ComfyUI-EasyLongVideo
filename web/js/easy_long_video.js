@@ -1,8 +1,9 @@
 // ComfyUI-EasyLongVideo 前端面板
 // 功能：参数中文标签 / 参数预设 / 分段审核（试听/编辑/合并/拆分/连播）/
 //       历史项目 / 顺序生成控制 / 节点实时进度
-import { app } from "../../scripts/app.js";
-import { api } from "../../scripts/api.js";
+// [v2] 使用 window.comfyAPI 全局（ComfyUI 官方新写法），不再依赖 ESM import，
+//      对动态加载/缓存损坏免疫。
+const { app, api } = window.comfyAPI;
 
 const NODE_TYPE = "EasyLVUnified";
 let stylesInjected = false;
@@ -178,34 +179,6 @@ function drawWave(canvas, analysis, plan, dragCut) {
             ctx.fillRect(lx - 3, ly, tw + 6, 15 * devicePixelRatio);
             ctx.fillStyle = "#ffd98a";
             ctx.fillText(label, lx, ly + 11 * devicePixelRatio);
-        }
-    });
-    if (dual) {
-        ctx.font = `${10 * devicePixelRatio}px sans-serif`;
-        ctx.fillStyle = "#7fa8d9"; ctx.fillText("原曲", 6, half - 6);
-        ctx.fillStyle = "#6fd0a0"; ctx.fillText("人声", 6, h - 6);
-    }
-}
-    // 上：原曲（蓝）；下：人声（绿）
-    drawTrack(analysis.waveform.original || [], "#3d5a80", 0, half, 0.95);
-    if (dual) drawTrack(analysis.waveform.vocals, "#2e7d5b", half, h - half, 0.95);
-
-    // 段标签与切点
-    (plan.segments || []).forEach((row, i) => {
-        const x0 = (row.start_sample / plan.sample_rate) / dur * w;
-        if (i > 0) {
-            ctx.fillStyle = "#e05656";
-            ctx.fillRect(x0, 0, Math.max(1, devicePixelRatio), h);
-        }
-        if (i > 0 || true) {
-            const label = `第${i + 1}段`;
-            ctx.font = `${11 * devicePixelRatio}px sans-serif`;
-            const tw = ctx.measureText(label).width;
-            const lx = Math.min(x0 + 4 * devicePixelRatio, w - tw - 4);
-            ctx.fillStyle = "rgba(20,20,24,0.75)";
-            ctx.fillRect(lx - 3, 4, tw + 6, 15 * devicePixelRatio);
-            ctx.fillStyle = "#ffd98a";
-            ctx.fillText(label, lx, 15 * devicePixelRatio);
         }
     });
     if (dual) {
@@ -905,23 +878,34 @@ app.registerExtension({
             const self = this;
             setTimeout(() => {
                 // 参数中文名
-                for (const w of self.widgets || []) {
-                    if (CN_LABELS[w.name]) w.label = CN_LABELS[w.name];
-                }
-                // 参数预设下拉
-                const preset = self.addWidget("combo", "⚙ 参数预设", "自定义", (v) => {
-                    if (v === "自定义" || !PRESETS[v]) return;
-                    for (const [name, value] of Object.entries(PRESETS[v])) {
-                        const w = self.widgets?.find((x) => x.name === name);
-                        if (w) { w.value = value; }
+                try {
+                    for (const w of self.widgets || []) {
+                        if (CN_LABELS[w.name]) w.label = CN_LABELS[w.name];
                     }
-                    app.graph.setDirtyCanvas(true, false);
-                }, { values: Object.keys(PRESETS).concat(["自定义"]) });
-                preset.serialize = false;
+                } catch (err) { console.warn("[EasyLongVideo] 中文标签失败:", err); }
+                // 防崩加固：每个控件独立容错，单个失败不影响其余
+                try {
+                    const preset = self.addWidget("combo", "⚙ 参数预设", "自定义", (v) => {
+                        try {
+                            if (v === "自定义" || !PRESETS[v]) return;
+                            for (const [name, value] of Object.entries(PRESETS[v])) {
+                                const w = self.widgets?.find((x) => x.name === name);
+                                if (w) { w.value = value; }
+                            }
+                            app.graph.setDirtyCanvas(true, false);
+                        } catch (err) { console.warn("[EasyLongVideo] 预设失败:", err); }
+                    }, { values: Object.keys(PRESETS).concat(["自定义"]) });
+                    preset.serialize = false;
+                } catch (err) { console.warn("[EasyLongVideo] 预设下拉失败:", err); }
                 const makeBtn = (label, handler) => {
-                    const btn = self.addWidget("button", label, null, handler);
-                    btn.serialize = false;
-                    return btn;
+                    try {
+                        const btn = self.addWidget("button", label, null, handler);
+                        btn.serialize = false;
+                        return btn;
+                    } catch (err) {
+                        console.warn("[EasyLongVideo] 按钮 " + label + " 添加失败:", err);
+                        return null;
+                    }
                 };
                 makeBtn("⚙ 运镜规则：查看与修改", openRulesDialog);
                 makeBtn("🔄 重新分析并分段", () => {
