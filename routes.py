@@ -544,20 +544,32 @@ def register_routes():
     @routes.post("/elv/project/{project_id}/segment/{index}/mute")
     @endpoint
     async def segment_mute(request):
-        """标记/取消某段"无人声"：标记后该段人声驱动输出全零（人物不开口）。
+        """标记/取消某段"无人声"：人声驱动输出全零 + 简报追加间奏表演约束。
 
+        音频静音防止音频驱动口型；简报约束防止提示词驱动唱歌——双保险。
         不影响分段与指纹，重做本段即生效。
         """
         payload = await request.json()
         root, pid = lv_store.projects_root(), request.match_info["project_id"]
         idx = int(request.match_info["index"])
+        interlude_note = ("本段为间奏（无人声演唱）：人物嘴部保持自然闭合，不唱歌不张嘴，"
+                          "不做出任何演唱口型，仅随音乐轻微律动。")
         with lv_store.LOCK:
             plan = lv_store.read_plan(root, pid)
             if not 0 <= idx < len(plan["segments"]):
                 raise ValueError("分段编号超出范围。")
-            plan["segments"][idx]["mute_vocals"] = bool(payload.get("mute"))
+            row = plan["segments"][idx]
+            row["mute_vocals"] = bool(payload.get("mute"))
+            brief = row.get("brief", "")
+            if row["mute_vocals"]:
+                if interlude_note not in brief:
+                    row["brief"] = (brief.rstrip() + "\n" + interlude_note)[:8000]
+                row["brief_edited"] = True  # 防止镜头重排时覆盖间奏约束
+            else:
+                row["brief"] = "\n".join(
+                    ln for ln in brief.splitlines() if interlude_note not in ln)
             lv_store.write_plan(root, plan)
-        return web.json_response({"index": idx, "mute_vocals": bool(payload.get("mute"))})
+        return web.json_response({"index": idx, "mute_vocals": row["mute_vocals"]})
 
     @routes.post("/elv/project/{project_id}/reveal-final")
     @endpoint
