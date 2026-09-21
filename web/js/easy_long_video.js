@@ -225,7 +225,8 @@ function renderSegments(container, plan) {
             <div class="elv-seg-head">
                 <span class="elv-seg-title">第 ${i + 1} 段</span>
                 <span class="elv-time">${fmt(a)} → ${fmt(b)}（${(b - a).toFixed(1)}s · ${row.generation_frames}帧 · ${esc(row.boundary_kind)}）</span>
-                <audio controls preload="none" src="/elv/project/${plan.id}/audio?index=${i}"></audio>
+                <audio controls preload="none" data-i="${i}" data-track="source" src="/elv/project/${plan.id}/audio?index=${i}"></audio>
+                <button class="elv-btn" data-act="track" data-i="${i}" style="padding:2px 8px;font-size:11px" title="切换试听分离后的人声">🎤 听人声</button>
                 <span class="elv-spacer"></span>
                 <span class="elv-spacer"></span>
                 <span class="elv-badge ${job.status === "completed" ? "ok" : job.status === "failed" ? "err" : ""}">${esc(job.status || "pending")}</span>
@@ -379,6 +380,15 @@ function bindSegmentEvents(panel) {
                             { index: i });
                         refresh(panel);
                     } catch (err) { alert(err.message); }
+                } else if (btn.dataset.act === "track") {
+                    // 切换试听：原声(含伴奏) ↔ 分离人声
+                    const audio = btn.closest(".elv-seg-head").querySelector("audio");
+                    const toVocals = audio.dataset.track !== "vocals";
+                    audio.dataset.track = toVocals ? "vocals" : "source";
+                    audio.src = `/elv/project/${panel.projectId}/audio?index=${i}` +
+                        (toVocals ? "&vocals=1" : "");
+                    audio.play().catch(() => {});
+                    btn.textContent = toVocals ? "🎧 听原曲" : "🎤 听人声";
                 } else if (btn.dataset.act === "resegsep") {
                     try {
                         await apiPost(`/elv/project/${panel.projectId}/segment/${i}/re-separate`, {});
@@ -427,6 +437,12 @@ async function collectPromptPayload(panel) {
     if (panel.videoSelect && panel.videoSelect.value) videoId = panel.videoSelect.value;
     if (!loaderId) throw new Error("画布中未找到 EasyLVUnified 节点。");
     if (!videoId) throw new Error("请选择视频输出节点（如 VHS Video Combine）。");
+    // 节点 id → 类型映射：供执行进度显示"正在执行哪个节点"
+    try {
+        const wfMap = {};
+        for (const n of (workflow.nodes || [])) wfMap[String(n.id)] = n.type;
+        window._elvWorkflowMap = wfMap;
+    } catch (err) { /* 显示降级 */ }
     return { prompt: output, workflow, loader_id: loaderId, video_id: videoId,
              client_id: api.clientId || "" };
 }
@@ -556,8 +572,11 @@ function openPanel(projectId) {
             <canvas class="elv-wave" id="elv-wave" height="110"></canvas>
             <div class="elv-hint" id="elv-wavelabel"></div>
             <div id="elv-diag" style="margin:2px 0 6px"></div>
-            <audio class="elv-fullaudio" controls preload="none"
-                src="/elv/project/${projectId}/audio" title="整曲试听"></audio>
+            <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+                <audio class="elv-fullaudio" controls preload="none" data-track="source"
+                    src="/elv/project/${projectId}/audio" title="整曲试听" style="flex:1"></audio>
+                <button class="elv-btn" id="elv-full-track" style="padding:4px 10px;font-size:12px" title="切换整曲试听音轨">🎤 听人声版</button>
+            </div>
             <div class="elv-hint">红色竖线为切点；每段可试听，或点「▶ 连播」按顺序试听全部段。
                 「◎ 试听切点」播放切点前后各2秒，用于精听切点质量。修改简报后自动保存；
                 调整切点后需要重新「保存并确认」。</div>
@@ -664,8 +683,18 @@ function openPanel(projectId) {
                 (+panel.retryInput.value || 0) + " 次。";
         } catch (err) { alert(err.message); }
     };
-        panel.playBtn.onclick = () =>
-            panel.playlist ? stopPlaylist(panel) : startPlaylist(panel);
+    panel.playBtn.onclick = () =>
+        panel.playlist ? stopPlaylist(panel) : startPlaylist(panel);
+    // 整曲试听音轨切换
+    const fullTrackBtn = overlay.querySelector("#elv-full-track");
+    fullTrackBtn.onclick = () => {
+        const audio = overlay.querySelector(".elv-fullaudio");
+        const toVocals = audio.dataset.track !== "vocals";
+        audio.dataset.track = toVocals ? "vocals" : "source";
+        audio.src = `/elv/project/${panel.projectId}/audio` + (toVocals ? "?vocals=1" : "");
+        audio.play().catch(() => {});
+        fullTrackBtn.textContent = toVocals ? "🎧 听原曲" : "🎤 听人声版";
+    };
         panel.resSepBtn = overlay.querySelector("#elv-reseparate");
         panel.resSepBtn.onclick = async () => {
             if (!confirm("重新分离人声？切点保持不变，段音频输出将自动更新\n" +
@@ -821,8 +850,34 @@ function setProgress(projectId, text) {
 }
 
 // 节点实时进度（websocket 事件推送；api 不可用时自动降级为面板轮询）
+const _elvActivePrompts = {}; // prompt_id -> {project_id, segment_index}
 try {
     if (api && typeof api.addEventListener === "function") {
+        api.addEventListener("elv-task", ({ detail }) => {
+            if (!detail?.project_id) return;
+            _elvActivePrompts[detail.prompt_id] = {
+                project_id: detail.project_id, index: detail.segment_index };
+            setProgress(detail.project_id,
+                `🎬 第 ${detail.segment_index + 1} 段已提交，开始执行…`);
+        });
+        // ComfyUI 原生事件：当前执行的节点 → 实时显示执行链条
+        api.addEventListener("executing", ({ detail }) => {
+            if (!detail?.prompt_id || !detail.node) return;
+            const info = _elvActivePrompts[detail.prompt_id];
+            if (!info) return;
+            const typeName = (window._elvWorkflowMap || {})[String(detail.node)]
+                || ("节点 " + detail.node);
+            setProgress(info.project_id,
+                `⚙ 第 ${info.index + 1} 段执行中：${typeName}`);
+        });
+        // 采样进度百分比
+        api.addEventListener("progress", ({ detail }) => {
+            if (!detail?.prompt_id) return;
+            const info = _elvActivePrompts[detail.prompt_id];
+            if (!info) return;
+            const pct = detail.max ? Math.round((detail.value / detail.max) * 100) : 0;
+            setProgress(info.project_id, `🎨 第 ${info.index + 1} 段采样中 ${pct}%`);
+        });
         api.addEventListener("elv-segment", ({ detail }) => {
             if (!detail?.project_id) return;
             const { project_id, segment_index, total } = detail;

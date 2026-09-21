@@ -145,6 +145,11 @@ async def _run_one(root, project_id, index, directory, output_root, server):
     number = server.number
     server.number += 1
     server.prompt_queue.put((number, prompt_id, prompt, extra, valid[2], {}))
+    # 通知前端 prompt_id：用于把 ComfyUI 的 executing/progress 事件关联到本项目，
+    # 让节点进度实时显示"正在执行哪个节点/采样百分比"。
+    _notify(server, "elv-task", {"project_id": project_id,
+                                 "segment_index": index,
+                                 "prompt_id": prompt_id})
 
     # 等待完成
     history = None
