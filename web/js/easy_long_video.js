@@ -242,7 +242,7 @@ function renderSegments(container, plan) {
             <div style="margin:8px 0 4px">
                 <div class="elv-hint" style="margin:0 0 4px">当前分段结果：</div>
                 <video controls preload="metadata" style="width:100%;max-height:280px;border-radius:8px;background:#111"
-                    src="/elv/project/${plan.id}/segment/${i}/video"></video>
+                    src="/elv/project/${plan.id}/segment/${i}/video?v=${encodeURIComponent(job.completed_at || job.video || "")}"></video>
             </div>` : ""}
             ${row.text ? `<div class="elv-text">${esc(row.text)}</div>` : ""}
             <div class="elv-seg-head" style="margin-bottom:6px">

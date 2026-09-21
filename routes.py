@@ -382,7 +382,7 @@ def register_routes():
         output_root = Path(__import__("folder_paths").get_output_directory()).resolve()
         if not str(video_path.resolve()).startswith(str(output_root)):
             raise ValueError("视频文件不在 output 目录内，拒绝访问。")
-        return web.FileResponse(video_path)
+        return web.FileResponse(video_path, headers={"Cache-Control": "no-store"})
 
     @routes.post("/elv/project/{project_id}/re-separate")
     @endpoint
