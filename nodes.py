@@ -78,6 +78,10 @@ def _segment_audio(directory, row, sr, fps, plan=None):
             audio = np.pad(audio, ((0, target - len(audio)), (0, 0)))
         outputs.append(audio)
     source, vocals = outputs[0], outputs[1]
+    # 用户标记"本段无人声"：人声驱动输出全零（间奏/和声段人物强制不开口）
+    if row.get("mute_vocals"):
+        vocals = np.zeros_like(vocals)
+        return source, vocals
     # 唱歌模式：间奏泄漏压制（人声轨中弱于演唱水平的部分渐变静音）
     if plan is not None and plan.get("mode") == "singing" \
             and plan.get("vocals_gate", True) and plan.get("vocals_rms_p50"):

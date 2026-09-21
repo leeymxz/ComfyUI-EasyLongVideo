@@ -232,6 +232,7 @@ function renderSegments(container, plan) {
                 <span class="elv-badge ${job.status === "completed" ? "ok" : job.status === "failed" ? "err" : ""}">${esc(job.status || "pending")}</span>
                 <button class="elv-btn" data-act="cue" data-i="${i}" title="试听切点前后各2秒">◎ 试听切点</button>
                 <button class="elv-btn" data-act="resegsep" data-i="${i}" ${row.resep_status === "running" ? "disabled" : ""} title="只对本段重新分离人声（±5秒上下文）">🎤 重分离本段${row.resep_status === "running" ? "中…" : ""}</button>
+                <button class="elv-btn" data-act="mute" data-i="${i}" style="padding:2px 8px;font-size:11px;${row.mute_vocals ? "background:#5a2a2a;border-color:#a04040;color:#ffb0b0" : ""}" title="标记本段无人声：人声驱动输出归零，人物强制不开口">${row.mute_vocals ? "🔇 已静音驱动" : "🔇 本段无人声"}</button>
                 <button class="elv-btn" data-act="redo" data-i="${i}" ${plan.run_status === "running" ? "disabled" : ""}>重做本段</button>
                 <button class="elv-btn" data-act="merge" data-i="${i}" ${i >= plan.segments.length - 1 ? "disabled" : ""}>并入下一段</button>
                 <button class="elv-btn" data-act="split" data-i="${i}">✂ 拆分</button>
@@ -349,6 +350,8 @@ function stopPlaylist(panel) {
     if (panel.plan) { renderSegments(panel.listEl, panel.plan); bindSegmentEvents(panel); }
 }
 
+const row_mute_state = (panel, i) => !!(panel.plan?.segments?.[i]?.mute_vocals);
+
 function bindSegmentEvents(panel) {
     panel.listEl.querySelectorAll(".elv-btn[data-act]").forEach((btn) => {
         btn.onclick = async () => {
@@ -378,6 +381,16 @@ function bindSegmentEvents(panel) {
                     try {
                         panel.plan = await apiPost(`/elv/project/${panel.projectId}/restore`,
                             { index: i });
+                        refresh(panel);
+                    } catch (err) { alert(err.message); }
+                } else if (btn.dataset.act === "mute") {
+                    const toMute = !row_mute_state(panel, i);
+                    try {
+                        await apiPost(`/elv/project/${panel.projectId}/segment/${i}/mute`,
+                            { mute: toMute });
+                        panel.noteEl.textContent = toMute
+                            ? `第 ${i + 1} 段已标记「无人声」，点「重做本段」后人物将在此段保持不开口。`
+                            : `第 ${i + 1} 段已取消静音标记，点「重做本段」恢复人声驱动。`;
                         refresh(panel);
                     } catch (err) { alert(err.message); }
                 } else if (btn.dataset.act === "track") {

@@ -541,6 +541,24 @@ def register_routes():
         asyncio.create_task(job())
         return web.json_response({"started": True, "index": idx})
 
+    @routes.post("/elv/project/{project_id}/segment/{index}/mute")
+    @endpoint
+    async def segment_mute(request):
+        """标记/取消某段"无人声"：标记后该段人声驱动输出全零（人物不开口）。
+
+        不影响分段与指纹，重做本段即生效。
+        """
+        payload = await request.json()
+        root, pid = lv_store.projects_root(), request.match_info["project_id"]
+        idx = int(request.match_info["index"])
+        with lv_store.LOCK:
+            plan = lv_store.read_plan(root, pid)
+            if not 0 <= idx < len(plan["segments"]):
+                raise ValueError("分段编号超出范围。")
+            plan["segments"][idx]["mute_vocals"] = bool(payload.get("mute"))
+            lv_store.write_plan(root, plan)
+        return web.json_response({"index": idx, "mute_vocals": bool(payload.get("mute"))})
+
     @routes.post("/elv/project/{project_id}/reveal-final")
     @endpoint
     async def reveal_final(request):
