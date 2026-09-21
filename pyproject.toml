@@ -9,7 +9,7 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/your-name/ComfyUI-EasyLongVideo"
+Repository = "https://github.com/leeymxz/ComfyUI-EasyLongVideo"
 
 [tool.comfy]
 PublisherId = "easylongvideo"
