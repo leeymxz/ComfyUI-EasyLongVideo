@@ -530,6 +530,15 @@ async function refresh(panel) {
         if (panel.retryInput && document.activeElement !== panel.retryInput) {
             panel.retryInput.value = plan.auto_retry ?? 0;
         }
+        // 间奏静音灵敏度（唱歌模式显示）
+        const gateWrap = panel.overlay.querySelector("#elv-gate-wrap");
+        if (gateWrap) {
+            gateWrap.style.display = plan.mode === "singing" ? "inline" : "none";
+            if (document.activeElement !== panel.gateInput) {
+                panel.gateInput.value = plan.vocals_gate_thr_scale ?? 0.22;
+                panel.gateVal.textContent = "×" + (+panel.gateInput.value).toFixed(2);
+            }
+        }
         if (!running && panel.polling) { clearInterval(panel.polling); panel.polling = null; }
     } catch (err) { /* 静默轮询错误 */ }
 }
@@ -593,6 +602,10 @@ function openPanel(projectId) {
             <button class="elv-btn" id="elv-playall">▶ 连播全部分段</button>
             <button class="elv-btn" id="elv-reveal">📂 成片位置</button>
             <span class="elv-spacer"></span>
+            <label style="font-size:12px;color:#99a;display:none" id="elv-gate-wrap">间奏静音灵敏度
+                <input type="range" id="elv-gate" min="0.05" max="0.6" step="0.01" style="width:90px;vertical-align:middle">
+                <span id="elv-gate-val" style="color:#ddd"></span></label>
+            <button class="elv-btn" id="elv-ref-note" title="为所有段落简报追加四视图参考图画面约束（防止人物变成四视图拼图）">📌 追加参考图约束</button>
             <label style="font-size:12px;color:#99a">失败自动重试
                 <input class="elv-mini" id="elv-retry" type="number" min="0" max="9" value="0" style="width:52px"> 次</label>
             <label style="font-size:12px;color:#99a">视频输出节点：</label>
@@ -614,6 +627,8 @@ function openPanel(projectId) {
         historyEl: overlay.querySelector("#elv-history"),
         videoSelect: overlay.querySelector("#elv-video"),
         retryInput: overlay.querySelector("#elv-retry"),
+        gateInput: overlay.querySelector("#elv-gate"),
+        gateVal: overlay.querySelector("#elv-gate-val"),
         playBtn: overlay.querySelector("#elv-playall"),
         btnApprove: overlay.querySelector("#elv-approve"),
         btnRun: overlay.querySelector("#elv-run"),
@@ -681,6 +696,33 @@ function openPanel(projectId) {
                 { auto_retry: +panel.retryInput.value || 0 });
             panel.noteEl.textContent = "已保存：失败自动重试 " +
                 (+panel.retryInput.value || 0) + " 次。";
+        } catch (err) { alert(err.message); }
+    };
+    // 间奏静音灵敏度（越小越严格：间奏压得越干净，太紧会误伤轻声演唱）
+    panel.gateInput.onchange = async () => {
+        try {
+            const v = +panel.gateInput.value || 0.22;
+            await apiPost(`/elv/project/${panel.projectId}/settings`,
+                { vocals_gate_thr_scale: v });
+            panel.gateVal.textContent = "×" + v.toFixed(2);
+            panel.noteEl.textContent =
+                "门限已保存（×" + v.toFixed(2) + "）。对某段生效请「重做本段」" +
+                "（配合「🎤 重分离本段」效果更佳）。";
+        } catch (err) { alert(err.message); }
+    };
+    // 一键为所有段落追加四视图参考图约束
+    overlay.querySelector("#elv-ref-note").onclick = async () => {
+        const note = "画面约束：参考图为人物多视角设定图（四视图），仅用于锁定人物长相、发型、" +
+            "服装与身份一致性；视频画面始终是同一位人物在真实场景中的连续实拍镜头，" +
+            "画面中自始至终只出现这一个人物；严禁重现参考图的拼接版式、白底设定图样式，" +
+            "严禁同时出现多个人物或多个分身。";
+        if (!confirm("为所有段落的镜头简报追加参考图画面约束？\n（已有该约束的段落会自动跳过）")) return;
+        try {
+            panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
+                { revision: panel.plan.revision,
+                  operations: [{ op: "append_note", text: note }] });
+            panel.noteEl.textContent = "已为全部段落追加参考图约束，请重新「保存并确认」后生效。";
+            refresh(panel);
         } catch (err) { alert(err.message); }
     };
     panel.playBtn.onclick = () =>

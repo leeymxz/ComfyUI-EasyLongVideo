@@ -144,6 +144,16 @@ def register_routes():
                         raise ValueError("该段没有保存的默认简报（旧项目请在重新分析后使用）。")
                     segments[idx]["brief"] = default
                     segments[idx]["brief_edited"] = False
+                elif kind == "append_note":
+                    # 批量为所有段落追加固定约束（如四视图参考图画面约束）
+                    note = str(op.get("text", "")).strip()[:1200]
+                    if not note:
+                        raise ValueError("追加内容为空。")
+                    for row_all in segments:
+                        if note not in row_all.get("brief", ""):
+                            row_all["brief"] = (row_all.get("brief", "").rstrip()
+                                                + "\n" + note)[:8000]
+                            row_all["brief_edited"] = True
                 elif kind == "merge_next":
                     if idx >= len(segments) - 1:
                         raise ValueError("最后一段没有下一段可合并。")
@@ -216,8 +226,12 @@ def register_routes():
             plan = lv_store.read_plan(root, pid)
             if "auto_retry" in payload:
                 plan["auto_retry"] = max(0, min(int(payload["auto_retry"] or 0), 9))
+            if "vocals_gate_thr_scale" in payload:
+                plan["vocals_gate_thr_scale"] = max(0.05, min(
+                    float(payload["vocals_gate_thr_scale"] or 0.22), 0.6))
             lv_store.write_plan(root, plan)
-        return web.json_response({"auto_retry": plan.get("auto_retry", 0)})
+        return web.json_response({"auto_retry": plan.get("auto_retry", 0),
+                                  "vocals_gate_thr_scale": plan.get("vocals_gate_thr_scale", 0.22)})
 
     # ------------------------------------------------------------ 音频试听
 
@@ -415,6 +429,18 @@ def register_routes():
                             v_rms = _np.sqrt((v_mono[:v_blocks * v_hop]
                                               .reshape(v_blocks, v_hop) ** 2).mean(axis=1))
                             plan["vocals_rms_p50"] = float(_np.percentile(v_rms, 50))
+                        # 刷新面板波形下轨（人声峰值为新分离结果）
+                        try:
+                            import json as _json
+                            from .lv_segment import waveform_peaks as _wp
+                            an_path = lv_store.state_file(directory, "analysis.json")
+                            if an_path.is_file():
+                                an = _json.loads(an_path.read_text(encoding="utf-8"))
+                                an.setdefault("waveform", {})["vocals"] = _wp(out)
+                                an_path.write_text(_json.dumps(an, ensure_ascii=False),
+                                                   encoding="utf-8")
+                        except Exception:
+                            pass
                         lv_store.write_plan(root, plan)
             except Exception as exc:
                 with lv_store.LOCK:
@@ -480,6 +506,29 @@ def register_routes():
                     write_wav(lv_store.audio_file(directory, "vocals.wav"), new_vocals, sr2)
                     row2["resep_status"] = "done"
                     row2["resep_at"] = time.time()
+                    # 更新面板波形下轨的该段区间（视觉同步）
+                    try:
+                        import json as _json
+                        import numpy as _np
+                        from .lv_segment import waveform_peaks as _wp
+                        an_path = lv_store.state_file(directory, "analysis.json")
+                        if an_path.is_file():
+                            an = _json.loads(an_path.read_text(encoding="utf-8"))
+                            peaks = an.setdefault("waveform", {}).setdefault("vocals", [])
+                            if peaks:
+                                dur = float(plan2["duration"])
+                                i0 = int(row2["start_sample"] / sr2 / dur * len(peaks))
+                                i1 = int(row2["end_sample"] / sr2 / dur * len(peaks))
+                                if i1 > i0:
+                                    seg_v = _wp(out[inner_start:inner_end])
+                                    an["waveform"]["vocals"][i0:i1] = list(
+                                        _np.interp(_np.linspace(0, max(1, len(seg_v) - 1),
+                                                                i1 - i0),
+                                                   range(len(seg_v)), seg_v))
+                            an_path.write_text(_json.dumps(an, ensure_ascii=False),
+                                               encoding="utf-8")
+                    except Exception:
+                        pass
                     lv_store.write_plan(root, plan2)
             except Exception as exc:
                 with lv_store.LOCK:

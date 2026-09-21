@@ -55,8 +55,11 @@ _AUDIO_EN = {
 _CONSTRAINTS = (
     "Keep the performer's identity, face, hairstyle, outfit and its original colors "
     "consistent with the reference pictures; keep the environment continuous with the "
-    "reference scene. Do not add new subtitles, captions, lyrics, watermarks or any "
-    "text overlays. Do not switch to a different person or a different scene."
+    "reference scene. The reference pictures are a character turnaround sheet (multiple "
+    "views): use them ONLY as identity reference. The video shows ONE single person "
+    "filmed continuously in a real scene; never reproduce the turnaround-sheet layout, "
+    "white-background model views, split screens, or more than one person. Do not add "
+    "new subtitles, captions, lyrics, watermarks or any text overlays."
 )
 
 

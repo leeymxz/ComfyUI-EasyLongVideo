@@ -336,6 +336,13 @@ def camera_sequence(mode, rows, activity="auto", widest="medium close-up", seed=
     return states
 
 
+# 固定画面约束：四视图参考图仅作一致性参考（用户反馈：H3 常把四视图当画面内容）
+REFERENCE_NOTE = ("画面约束：参考图为人物多视角设定图（四视图），仅用于锁定人物长相、发型、"
+                  "服装与身份一致性；视频画面始终是同一位人物在真实场景中的连续实拍镜头，"
+                  "画面中自始至终只出现这一个人物；严禁重现参考图的拼接版式、白底设定图样式，"
+                  "严禁同时出现多个人物或多个分身。")
+
+
 def segment_brief(mode, state):
     """生成单段中文镜头简报（与参考实现的文本协议兼容）。"""
     if mode == "speaking":
@@ -362,4 +369,5 @@ def segment_brief(mode, state):
         f"模式：{'口播' if mode == 'speaking' else '唱歌'}\n"
         f"镜头方案：{camera}\n"
         f"表演节奏：{performance}\n"
+        f"{REFERENCE_NOTE}\n"
     )
