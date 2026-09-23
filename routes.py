@@ -4,6 +4,7 @@
 所有端点挂在 /elv/ 前缀下，错误统一返回 {"error": "..."}。
 """
 import asyncio
+import json
 import time
 
 from . import lv_camera, lv_controller, lv_ffmpeg, lv_segment, lv_separate, lv_store
@@ -229,9 +230,17 @@ def register_routes():
             if "vocals_gate_thr_scale" in payload:
                 plan["vocals_gate_thr_scale"] = max(0.05, min(
                     float(payload["vocals_gate_thr_scale"] or 0.22), 0.6))
+            if "export_prefix" in payload:
+                import re as _re
+                plan["export_prefix"] = _re.sub(
+                    r'[\\/:*?"<>|]', "_", str(payload["export_prefix"] or "").strip())[:60]
+            if "export_to_downloads" in payload:
+                plan["export_to_downloads"] = bool(payload["export_to_downloads"])
             lv_store.write_plan(root, plan)
         return web.json_response({"auto_retry": plan.get("auto_retry", 0),
-                                  "vocals_gate_thr_scale": plan.get("vocals_gate_thr_scale", 0.22)})
+                                  "vocals_gate_thr_scale": plan.get("vocals_gate_thr_scale", 0.22),
+                                  "export_prefix": plan.get("export_prefix", ""),
+                                  "export_to_downloads": plan.get("export_to_downloads", False)})
 
     # ------------------------------------------------------------ 音频试听
 
@@ -335,8 +344,7 @@ def register_routes():
     @routes.post("/elv/project/{project_id}/restore")
     @endpoint
     async def restore(request):
-        """恢复某段的上一版生成结果（从 takes 归档中弹出）。"""
-        import copy as _copy
+        """恢复某段的历史归档版本（take 省略=最近归档；可指定索引）。"""
         payload = await request.json()
         root, pid = lv_store.projects_root(), request.match_info["project_id"]
         with lv_store.LOCK:
@@ -347,11 +355,18 @@ def register_routes():
             takes = row.get("takes") or []
             if not takes:
                 raise ValueError("该段没有可恢复的历史版本。")
-            previous = takes.pop()
+            take = payload.get("take")
+            if take is None:
+                previous = takes.pop()
+            else:
+                take = int(take)
+                if not -len(takes) <= take < len(takes):
+                    raise ValueError("版本编号超出范围。")
+                previous = takes.pop(take)
             current = row.get("job") or {}
             if current.get("status") == "completed" and current.get("video"):
                 takes.append({"status": "completed", "video": current["video"],
-                              "archived_at": __import__("time").time(),
+                              "archived_at": time.time(),
                               "brief_snapshot": row.get("brief", "")})
             row["job"] = {"status": "completed", "video": previous["video"],
                           "restored_from": previous.get("archived_at")}
@@ -570,6 +585,55 @@ def register_routes():
                     ln for ln in brief.splitlines() if interlude_note not in ln)
             lv_store.write_plan(root, plan)
         return web.json_response({"index": idx, "mute_vocals": row["mute_vocals"]})
+
+    @routes.post("/elv/project/{project_id}/mute-interludes")
+    @endpoint
+    async def mute_interludes(request):
+        """批量标记"间奏段"：分析时检测的无人声区（intro/interlude/outro）
+        中点落在其内的段落，批量设置/取消 🔇 静音驱动标记。"""
+        payload = await request.json()
+        mute = bool(payload.get("mute", True))
+        root, pid = lv_store.projects_root(), request.match_info["project_id"]
+        with lv_store.LOCK:
+            plan = lv_store.read_plan(root, pid)
+            directory = lv_store.project_dir(root, pid)
+            an_path = lv_store.state_file(directory, "analysis.json")
+            sections = []
+            if an_path.is_file():
+                an = json.loads(an_path.read_text(encoding="utf-8"))
+                sections = an.get("sections", [])
+            if not sections:
+                raise ValueError("分析数据中没有无人声区记录（旧项目请重新分析）。")
+            sr = int(plan["sample_rate"])
+            marked = []
+            for row in plan["segments"]:
+                mid = (row["start_sample"] + row["end_sample"]) / 2 / sr
+                if any(float(s["start"]) <= mid <= float(s["end"]) for s in sections):
+                    row["mute_vocals"] = mute
+                    marked.append(row["index"])
+            lv_store.write_plan(root, plan)
+        return web.json_response({"marked": marked, "mute": mute})
+
+    @routes.get("/elv/project/{project_id}/segment/{index}/take/{take}/video")
+    @endpoint
+    async def take_video(request):
+        """流式输出某段的历史归档版本视频（版本对比预览）。"""
+        from pathlib import Path
+        root, pid = lv_store.projects_root(), request.match_info["project_id"]
+        plan = lv_store.read_plan(root, pid)
+        idx, take = int(request.match_info["index"]), int(request.match_info["take"])
+        if not 0 <= idx < len(plan["segments"]):
+            raise ValueError("分段编号超出范围。")
+        takes = plan["segments"][idx].get("takes") or []
+        if not -len(takes) <= take < len(takes):
+            raise ValueError("版本编号超出范围。")
+        video = Path(takes[take]["video"])
+        if not video.is_file():
+            raise FileNotFoundError(str(video))
+        output_root = Path(__import__("folder_paths").get_output_directory()).resolve()
+        if not str(video.resolve()).startswith(str(output_root)):
+            raise ValueError("视频文件不在 output 目录内，拒绝访问。")
+        return web.FileResponse(video, headers={"Cache-Control": "no-store"})
 
     @routes.post("/elv/project/{project_id}/reveal-final")
     @endpoint

@@ -212,15 +212,24 @@ def assemble(root, project_id, read_plan, project_dir):
         stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(
             float(plan.get("created") or time.time())))
         mode = "speaking" if plan.get("mode") == "speaking" else "singing"
+        prefix = str(plan.get("export_prefix") or "").strip()
+        stem = f"{prefix}_{stamp}_{mode}" if prefix else f"{stamp}_{mode}_{project_id[:8]}"
         final_dir = Path(root).resolve().parent / "final_videos"
         final_dir.mkdir(parents=True, exist_ok=True)
-        stem = f"{stamp}_{mode}_{project_id[:8]}"
         final = final_dir / f"{stem}.mp4"
         version = 2
         while final.exists():
             final = final_dir / f"{stem}_v{version}.mp4"
             version += 1
         final_tmp.replace(final)
+        # 可选：同步复制一份到系统下载文件夹
+        if plan.get("export_to_downloads"):
+            try:
+                dl = Path.home() / "Downloads"
+                dl.mkdir(exist_ok=True)
+                shutil.copy2(final, dl / final.name)
+            except Exception:
+                pass
         return str(final)
     finally:
         shutil.rmtree(work, ignore_errors=True)

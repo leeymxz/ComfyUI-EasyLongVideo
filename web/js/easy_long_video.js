@@ -236,7 +236,7 @@ function renderSegments(container, plan) {
                 <button class="elv-btn" data-act="redo" data-i="${i}" ${plan.run_status === "running" ? "disabled" : ""}>重做本段</button>
                 <button class="elv-btn" data-act="merge" data-i="${i}" ${i >= plan.segments.length - 1 ? "disabled" : ""}>并入下一段</button>
                 <button class="elv-btn" data-act="split" data-i="${i}">✂ 拆分</button>
-                ${(row.takes?.length || 0) > 0 ? `<button class="elv-btn" data-act="restore" data-i="${i}" ${plan.run_status === "running" ? "disabled" : ""}>↺ 恢复上一版 (${row.takes.length})</button>` : ""}
+                <button class="elv-btn" data-act="versions" data-i="${i}" ${row.resep_status === "running" ? "disabled" : ""}>↺ 版本管理${row.takes?.length ? ` (${row.takes.length})` : ""}</button>
             </div>
             ${job.status === "completed" && job.video ? `
             <div style="margin:8px 0 4px">
@@ -314,6 +314,57 @@ async function openSplitDialog(panel, index) {
 }
 
 // 连播：依次播放每段音频
+// 版本管理弹窗：预览当前版本与历史归档，可恢复指定版本
+async function openVersionsDialog(panel, index) {
+    const plan = panel.plan;
+    const row = plan.segments[index];
+    const takes = row.takes || [];
+    const versions = [];
+    if (row.job?.status === "completed" && row.job?.video) {
+        versions.push({ label: "当前版本", take: null, ts: row.job.completed_at,
+                        video: row.job.video });
+    }
+    [...takes].reverse().forEach((t, ridx) => {
+        versions.push({ label: `历史版本 ${takes.length - ridx}`,
+                        take: takes.indexOf(t), ts: t.archived_at, video: t.video });
+    });
+    const overlay = document.createElement("div");
+    overlay.className = "elv-overlay";
+    overlay.innerHTML = `
+    <div class="elv-panel" style="width:min(720px,92vw)">
+        <div class="elv-head"><h3>🗂 第 ${index + 1} 段 · 版本管理</h3>
+            <button class="elv-close">✕</button></div>
+        <div class="elv-body">
+            ${versions.map((v, vi) => `
+            <div style="border:1px solid #3a3a40;border-radius:8px;padding:8px;margin-bottom:10px">
+                <div class="elv-seg-head" style="margin-bottom:6px">
+                    <b>${esc(v.label)}</b>
+                    ${v.ts ? `<span class="elv-time">${new Date(v.ts * 1000).toLocaleString()}</span>` : ""}
+                    <span class="elv-spacer"></span>
+                    ${v.take !== null && v.take !== undefined
+                        ? `<button class="elv-btn" data-restore="${v.take}">↺ 恢复此版本</button>` : ""}
+                </div>
+                <video controls preload="metadata" style="width:100%;max-height:240px;border-radius:8px;background:#111"
+                    src="/elv/project/${plan.id}/segment/${index}/${v.take !== null && v.take !== undefined ? `take/${v.take}/` : ""}video?v=${vi}"></video>
+            </div>`).join("") || `<div class="elv-hint">暂无历史版本。</div>`}
+        </div>
+    </div>`;
+    document.body.appendChild(overlay);
+    overlay.querySelector(".elv-close").onclick = () => overlay.remove();
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelectorAll("[data-restore]").forEach((btn) => {
+        btn.onclick = async () => {
+            try {
+                panel.plan = await apiPost(`/elv/project/${panel.projectId}/restore`,
+                    { index, take: parseInt(btn.dataset.restore) });
+                overlay.remove();
+                panel.noteEl.textContent = "版本已恢复（当前版本自动归档），点「重做本段」可再次生成。";
+                refresh(panel);
+            } catch (err) { alert(err.message); }
+        };
+    });
+}
+
 function startPlaylist(panel) {
     stopPlaylist(panel);
     const player = new Audio();
@@ -329,7 +380,8 @@ function startPlaylist(panel) {
 function playSegment(panel, index) {
     if (!panel.playlist) return;
     panel.playlist.index = index;
-    panel.playlist.player.src = `/elv/project/${panel.projectId}/audio?index=${index}`;
+    const vocals = panel.playVocalsChk?.checked ? "&vocals=1" : "";
+    panel.playlist.player.src = `/elv/project/${panel.projectId}/audio?index=${index}${vocals}`;
     panel.playlist.player.play().catch(() => {});
     panel.listEl.dataset.playIndex = String(index);
     renderSegments(panel.listEl, panel.plan);
@@ -402,6 +454,8 @@ function bindSegmentEvents(panel) {
                         (toVocals ? "&vocals=1" : "");
                     audio.play().catch(() => {});
                     btn.textContent = toVocals ? "🎧 听原曲" : "🎤 听人声";
+                } else if (btn.dataset.act === "versions") {
+                    openVersionsDialog(panel, i);
                 } else if (btn.dataset.act === "resegsep") {
                     try {
                         await apiPost(`/elv/project/${panel.projectId}/segment/${i}/re-separate`, {});
@@ -518,6 +572,11 @@ async function refresh(panel) {
         }
         renderSegments(panel.listEl, plan);
         bindSegmentEvents(panel);
+        // 桌面通知：状态变为失败时提醒一次
+        if (panel._lastStatus && panel._lastStatus !== "failed" && plan.run_status === "failed") {
+            elvNotify("⚠️ 长视频生成失败", plan.error || "请打开面板查看详情。");
+        }
+        panel._lastStatus = plan.run_status;
         const running = ["running", "pausing", "stopping", "merging"].includes(plan.run_status);
         // 诊断统计行（实时段状态 + 打开时缓存的识别/声学统计）
         const done = plan.segments.filter((r) => r.job?.status === "completed").length;
@@ -542,6 +601,17 @@ async function refresh(panel) {
             ? `<video controls style="width:100%;border-radius:8px" src="/elv/project/${plan.id}/final"></video>` : "";
         if (panel.retryInput && document.activeElement !== panel.retryInput) {
             panel.retryInput.value = plan.auto_retry ?? 0;
+        }
+        // 导出选项同步
+        if (panel.exportPrefix && document.activeElement !== panel.exportPrefix) {
+            panel.exportPrefix.value = plan.export_prefix ?? "";
+        }
+        if (panel.exportDl) panel.exportDl.checked = !!plan.export_to_downloads;
+        // 间奏批量标记按钮显示条件
+        if (panel.muteInterludesBtn) {
+            panel.muteInterludesBtn.style.display =
+                (plan.mode === "singing" && panel.analysis?.sections?.length)
+                    ? "inline-block" : "none";
         }
         // 间奏静音灵敏度（唱歌模式显示）
         const gateWrap = panel.overlay.querySelector("#elv-gate-wrap");
@@ -613,11 +683,15 @@ function openPanel(projectId) {
             <button class="elv-btn" id="elv-assemble">🎞 仅重新合成</button>
             <button class="elv-btn" id="elv-reseparate" style="display:none">🎤 重新分离人声</button>
             <button class="elv-btn" id="elv-playall">▶ 连播全部分段</button>
+            <label style="font-size:12px;color:#99a" title="连播时使用分离后的人声轨（检查各段泄漏）"><input type="checkbox" id="elv-play-vocals"> 人声连播</label>
             <button class="elv-btn" id="elv-reveal">📂 成片位置</button>
+            <input class="elv-mini" id="elv-export-prefix" placeholder="成片文件名前缀" style="width:110px" title="成片文件命名前缀（留空用时间戳）">
+            <label style="font-size:12px;color:#99a" title="合成完成后自动复制一份到系统下载文件夹"><input type="checkbox" id="elv-export-dl"> 到下载</label>
             <span class="elv-spacer"></span>
             <label style="font-size:12px;color:#99a;display:none" id="elv-gate-wrap">间奏静音灵敏度
                 <input type="range" id="elv-gate" min="0.05" max="0.6" step="0.01" style="width:90px;vertical-align:middle">
                 <span id="elv-gate-val" style="color:#ddd"></span></label>
+            <button class="elv-btn" id="elv-mute-interludes" style="display:none" title="批量标记分析检测出的无人声区段落（可单独取消）">🔇 标记间奏段</button>
             <button class="elv-btn" id="elv-ref-note" title="为所有段落简报追加四视图参考图画面约束（防止人物变成四视图拼图）">📌 追加参考图约束</button>
             <label style="font-size:12px;color:#99a">失败自动重试
                 <input class="elv-mini" id="elv-retry" type="number" min="0" max="9" value="0" style="width:52px"> 次</label>
@@ -642,6 +716,10 @@ function openPanel(projectId) {
         retryInput: overlay.querySelector("#elv-retry"),
         gateInput: overlay.querySelector("#elv-gate"),
         gateVal: overlay.querySelector("#elv-gate-val"),
+        muteInterludesBtn: overlay.querySelector("#elv-mute-interludes"),
+        playVocalsChk: overlay.querySelector("#elv-play-vocals"),
+        exportPrefix: overlay.querySelector("#elv-export-prefix"),
+        exportDl: overlay.querySelector("#elv-export-dl"),
         playBtn: overlay.querySelector("#elv-playall"),
         btnApprove: overlay.querySelector("#elv-approve"),
         btnRun: overlay.querySelector("#elv-run"),
@@ -723,6 +801,42 @@ function openPanel(projectId) {
                 "（配合「🎤 重分离本段」效果更佳）。";
         } catch (err) { alert(err.message); }
     };
+    // 一键批量标记间奏段（分析检测的无人声区）
+    panel.muteInterludesBtn.onclick = async () => {
+        if (!confirm("将分析检测出的「无人声区」段落批量标记为 🔇 静音驱动？\n" +
+                "（标记段的人物将不开口；可单独取消某段的标记）")) return;
+        try {
+            const res = await apiPost(`/elv/project/${panel.projectId}/mute-interludes`,
+                { mute: true });
+            panel.noteEl.textContent = res.marked.length
+                ? `已标记 ${res.marked.length} 个间奏段：第 ${res.marked.map((x) => x + 1).join("、")} 段。重做对应段后生效。`
+                : "没有检测到落在无人声区内的分段。";
+            refresh(panel);
+        } catch (err) { alert(err.message); }
+    };
+    // 成片导出选项
+    panel.exportPrefix.onchange = async () => {
+        try {
+            await apiPost(`/elv/project/${panel.projectId}/settings`,
+                { export_prefix: panel.exportPrefix.value });
+            panel.noteEl.textContent = "成片文件名前缀已保存。";
+        } catch (err) { alert(err.message); }
+    };
+    panel.exportDl.onchange = async () => {
+        try {
+            await apiPost(`/elv/project/${panel.projectId}/settings`,
+                { export_to_downloads: panel.exportDl.checked });
+            panel.noteEl.textContent = panel.exportDl.checked
+                ? "合成后将自动复制一份到系统下载文件夹。"
+                : "已关闭自动复制到下载文件夹。";
+        } catch (err) { alert(err.message); }
+    };
+    // 桌面通知（生成完成/失败提醒）
+    try {
+        if ("Notification" in window && Notification.permission === "default") {
+            Notification.requestPermission();
+        }
+    } catch (err) { /* 忽略 */ }
     // 一键为所有段落追加四视图参考图约束
     overlay.querySelector("#elv-ref-note").onclick = async () => {
         const note = "画面约束：参考图为人物多视角设定图（四视图），仅用于锁定人物长相、发型、" +
@@ -947,6 +1061,7 @@ try {
         api.addEventListener("elv-final", ({ detail }) => {
             if (!detail?.project_id) return;
             setProgress(detail.project_id, "✅ 全部完成，成片已合成");
+            elvNotify("🎬 长视频生成完成", "全部段落已合成成片，打开面板查看。");
             if (panel && panel.projectId === detail.project_id) refresh(panel);
         });
     } else {
@@ -954,6 +1069,14 @@ try {
     }
 } catch (err) {
     console.warn("[EasyLongVideo] 事件监听注册失败（不影响面板）:", err);
+}
+
+// 桌面通知（浏览器 Notification，需用户授权一次）
+function elvNotify(title, body) {
+    try {
+        if (!("Notification" in window) || Notification.permission !== "granted") return;
+        new Notification(title, { body: (body || "").slice(0, 180) });
+    } catch (err) { /* 忽略 */ }
 }
 
 // ---------------------------------------------------------------- 扩展注册
