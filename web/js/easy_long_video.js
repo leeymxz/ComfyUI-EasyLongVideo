@@ -516,6 +516,31 @@ async function collectPromptPayload(panel) {
 
 async function refresh(panel) {
     try {
+        // —— 轻量状态轮询：方案/段状态无变化时跳过全量渲染 ——
+        const st = await apiGet(`/elv/project/${panel.projectId}/status`);
+        const sig = JSON.stringify(st.segments_sig);
+        const fullNeeded = !panel.plan || st.revision !== panel._rev || sig !== panel._segSig;
+        panel._rev = st.revision;
+        panel._segSig = sig;
+        if (!fullNeeded) {
+            const sepFast = st.separation_status === "running" ? " · 分离中…"
+                : st.separation_status === "failed" ? " · 分离失败" : "";
+            panel.statusEl.innerHTML = statusBadge(st) +
+                (st.separation ? ` <span class="elv-badge">人声:${esc(st.separation)}${sepFast}</span>` : "");
+            if (panel.resSepBtn) panel.resSepBtn.disabled = st.separation_status === "running";
+            if (panel._lastStatus && panel._lastStatus !== "failed" && st.run_status === "failed") {
+                elvNotify("⚠️ 长视频生成失败", st.error || "请打开面板查看详情。");
+            }
+            panel._lastStatus = st.run_status;
+            const runningFast = ["running", "pausing", "stopping", "merging"].includes(st.run_status);
+            panel.btnRun.disabled = runningFast;
+            panel.btnApprove.disabled = runningFast;
+            panel.btnPause.disabled = !runningFast;
+            panel.btnStop.disabled = !runningFast;
+            if (!runningFast && panel.polling) { clearInterval(panel.polling); panel.polling = null; }
+            return;
+        }
+        // —— 全量路径：方案或段状态有变化 ——
         const plan = await apiGet(`/elv/project/${panel.projectId}`);
         panel.plan = plan;
         const sepStatus = plan.separation_status === "running" ? "分离中…"
@@ -621,6 +646,14 @@ async function refresh(panel) {
                 panel.gateInput.value = plan.vocals_gate_thr_scale ?? 0.22;
                 panel.gateVal.textContent = "×" + (+panel.gateInput.value).toFixed(2);
             }
+        }
+        // 📌 约束按钮智能显示：全部段都已内置约束 → 变灰
+        const refBtn = panel.overlay.querySelector("#elv-ref-note");
+        if (refBtn) {
+            const allHave = plan.segments.length > 0 &&
+                plan.segments.every((r) => r.brief && r.brief.includes("画面约束：参考图为人物多视角设定图"));
+            refBtn.disabled = allHave;
+            refBtn.textContent = allHave ? "✓ 参考图约束已内置" : "📌 追加参考图约束";
         }
         if (!running && panel.polling) { clearInterval(panel.polling); panel.polling = null; }
     } catch (err) { /* 静默轮询错误 */ }
@@ -866,8 +899,13 @@ function openPanel(projectId) {
     };
         panel.resSepBtn = overlay.querySelector("#elv-reseparate");
         panel.resSepBtn.onclick = async () => {
-            if (!confirm("重新分离人声？切点保持不变，段音频输出将自动更新\n" +
-                    "（如需按新人声重算切点，请之后点「🔄 重新分析并分段」）。")) return;
+            const resepCount = (panel.plan?.segments || []).filter((r) => r.resep_at).length;
+            let msg = "重新分离人声？切点保持不变，段音频输出将自动更新\n" +
+                "（如需按新人声重算切点，请之后点「🔄 重新分析并分段」）。";
+            if (resepCount) {
+                msg = `⚠ 检测到 ${resepCount} 段做过「重分离本段」，全曲重分离会覆盖它们的结果。\n\n仍要继续吗？`;
+            }
+            if (!confirm(msg)) return;
             try {
                 await apiPost(`/elv/project/${panel.projectId}/re-separate`, {});
                 panel.noteEl.textContent = "人声分离已启动（约 1~2 分钟），面板状态会显示进度。";
@@ -1162,6 +1200,24 @@ app.registerExtension({
                     const widget = self.widgets?.find((w) => w.name === "project_id");
                     if (widget?.value) loadWaveAndMaybeOpen(self, widget.value);
                     else alert("请先运行一次节点完成音频分析。");
+                });
+                // 参数折叠（实验性）：折叠高级参数，节点矮化
+                const ADV_WIDGETS = ["asr_mode", "asr_model", "asr_device",
+                                     "frame_align", "voice_separation"];
+                makeBtn("⚙ 折叠高级参数", () => {
+                    try {
+                        self._advCollapsed = !self._advCollapsed;
+                        const show = !self._advCollapsed;
+                        for (const w of self.widgets || []) {
+                            if (ADV_WIDGETS.includes(w.name)) {
+                                if (w.__origH === undefined) w.__origH = w.height || 24;
+                                w.height = show ? w.__origH : 0;
+                                if (w.computedHeight !== undefined) w.computedHeight = w.height;
+                            }
+                        }
+                        self.setSize([self.size[0], self.size[1]]);
+                        app.graph.setDirtyCanvas(true, false);
+                    } catch (err) { console.warn("[EasyLongVideo] 折叠失败:", err); }
                 });
             }, 0);
         };

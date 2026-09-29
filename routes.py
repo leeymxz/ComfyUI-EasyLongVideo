@@ -52,6 +52,31 @@ def register_routes():
                                    else plan["final_video"])
         return web.json_response(plan)
 
+    @routes.get("/elv/project/{project_id}/status")
+    @endpoint
+    async def project_status(request):
+        """轻量状态（面板 2 秒轮询用）：只返回变化信号，不传完整方案。"""
+        plan = lv_store.read_plan(lv_store.projects_root(),
+                                  request.match_info["project_id"])
+        return web.json_response({
+            "revision": int(plan.get("revision", 1)),
+            "run_status": plan.get("run_status"),
+            "error": plan.get("error", ""),
+            "separation": plan.get("separation"),
+            "separation_status": plan.get("separation_status"),
+            "separation_error": plan.get("separation_error", ""),
+            "final_video": bool(plan.get("final_video")),
+            "controller_active": plan.get("id") in lv_controller.TASKS,
+            "segments_sig": [
+                {"i": r["index"],
+                 "st": (r.get("job") or {}).get("status"),
+                 "ct": (r.get("job") or {}).get("completed_at"),
+                 "mute": bool(r.get("mute_vocals")),
+                 "resep": r.get("resep_status")}
+                for r in plan.get("segments", [])
+            ],
+        })
+
     @routes.get("/elv/project/{project_id}/analysis")
     @endpoint
     async def get_analysis(request):

@@ -1,0 +1,205 @@
+{
+ "last_node_id": 4,
+ "last_link_id": 3,
+ "nodes": [
+  {
+   "id": 1,
+   "type": "LoadAudio",
+   "pos": [
+    -900,
+    -320
+   ],
+   "size": [
+    390,
+    62
+   ],
+   "flags": {},
+   "order": 0,
+   "mode": 0,
+   "inputs": [],
+   "outputs": [],
+   "properties": {
+    "Node name for S&R": "LoadAudio"
+   },
+   "widgets_values": [
+    "音频.wav"
+   ]
+  },
+  {
+   "id": 2,
+   "type": "EasyLVUnified",
+   "pos": [
+    -880,
+    -220
+   ],
+   "size": [
+    400,
+    430
+   ],
+   "flags": {},
+   "order": 1,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "audio",
+     "type": "AUDIO",
+     "link": 1
+    },
+    {
+     "name": "vocals",
+     "type": "AUDIO",
+     "link": null
+    }
+   ],
+   "outputs": [
+    {
+     "name": "original_audio_padded",
+     "type": "AUDIO",
+     "links": []
+    },
+    {
+     "name": "vocals_padded",
+     "type": "AUDIO",
+     "links": []
+    },
+    {
+     "name": "segment_brief",
+     "type": "STRING",
+     "links": [
+      2
+     ]
+    },
+    {
+     "name": "generation_frames",
+     "type": "INT",
+     "links": []
+    },
+    {
+     "name": "filename_prefix",
+     "type": "STRING",
+     "links": []
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "EasyLVUnified"
+   },
+   "widgets_values": [
+    "singing",
+    11.0,
+    15.0,
+    "24",
+    "h3",
+    "auto",
+    "auto",
+    "auto",
+    "auto",
+    "medium close-up",
+    "",
+    0,
+    "auto"
+   ]
+  },
+  {
+   "id": 3,
+   "type": "EasyLVBriefToPrompt",
+   "pos": [
+    -520,
+    -100
+   ],
+   "size": [
+    360,
+    120
+   ],
+   "flags": {},
+   "order": 2,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "segment_brief",
+     "type": "STRING",
+     "link": 2
+    }
+   ],
+   "outputs": [
+    {
+     "name": "video_prompt",
+     "type": "STRING",
+     "links": [
+      3
+     ]
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "EasyLVBriefToPrompt"
+   },
+   "widgets_values": [
+    "",
+    "Picture 1 is the performer; Picture 2 is the environment.",
+    "english"
+   ]
+  },
+  {
+   "id": 4,
+   "type": "PreviewText",
+   "pos": [
+    -120,
+    -60
+   ],
+   "size": [
+    360,
+    120
+   ],
+   "flags": {},
+   "order": 3,
+   "mode": 0,
+   "inputs": [
+    {
+     "name": "text",
+     "type": "STRING",
+     "link": 3
+    }
+   ],
+   "outputs": [
+    {
+     "name": "text",
+     "type": "STRING",
+     "links": []
+    }
+   ],
+   "properties": {
+    "Node name for S&R": "PreviewText"
+   },
+   "widgets_values": []
+  }
+ ],
+ "links": [
+  [
+   1,
+   1,
+   0,
+   2,
+   0,
+   "AUDIO"
+  ],
+  [
+   2,
+   2,
+   2,
+   3,
+   0,
+   "STRING"
+  ],
+  [
+   3,
+   3,
+   0,
+   4,
+   0,
+   "STRING"
+  ]
+ ],
+ "groups": [],
+ "config": {},
+ "extra": {},
+ "version": 0.4
+}
