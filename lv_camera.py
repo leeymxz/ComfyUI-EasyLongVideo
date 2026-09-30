@@ -347,13 +347,28 @@ SEGMENT_INTERLUDE_NOTE = ("本段为间奏（无人声演唱）：人物嘴部�
                           "不做出任何演唱口型，仅随音乐轻微律动。")
 
 
-def segment_brief(mode, state):
-    """生成单段中文镜头简报（与参考实现的文本协议兼容）。"""
+def segment_brief(mode, state, visual_type="performer"):
+    """生成单段中文镜头简报（与原版文本协议兼容）。
+
+    visual_type: performer=演唱/口播；performance=氛围表演（不张嘴）；
+                 environment=空镜（不出现人物）。
+    """
+    if visual_type == "environment":
+        return (
+            f"模式：空镜\n"
+            f"镜头方案：沿参考场景平稳移动，连续展示原有空间、灯光与透视关系，"
+            "画面中不出现任何人物；环境与参考场景保持一致。\n"
+            f"表演节奏：仅呈现指定环境，随音频节奏展示空间氛围。\n"
+            f"{REFERENCE_NOTE}\n"
+        )
     if mode == "speaking":
         camera = ("沿用参考画面的原有构图，保持人物位置、人物尺度、身体可见范围、"
                   "头顶留白和裁切边界；全程固定机位单一连续镜头，"
                   "背景透视和构图跨段保持一致")
         performance = state["performance"]
+        if visual_type == "performance":
+            performance = ("人物随音乐自然律动（轻微摇摆/点头），嘴部保持闭合，"
+                           "不唱歌不张嘴，目视前方或环境，保持自然状态")
     else:
         opening = (f"{_ZH_SIZE[state['start_framing']]}"
                    f"{_ZH_ANGLE.get(state['start_angle'], state['start_angle'])}开场，"

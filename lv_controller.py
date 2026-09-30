@@ -110,6 +110,11 @@ async def _run_one(root, project_id, index, directory, output_root, server):
     loader_id, video_id = snapshot["loader_id"], snapshot["video_id"]
     prompt[loader_id]["inputs"]["project_id"] = project_id
     prompt[loader_id]["inputs"]["segment_index"] = index
+    # 分段自定义参考图：把该段 images 列表按序替换快照中的 LoadImage 节点
+    seg_images = row.get("images") or []
+    for k, node_id in enumerate(snapshot.get("image_nodes") or []):
+        if k < len(seg_images):
+            prompt[str(node_id)]["inputs"]["image"] = seg_images[k]
     # 重做必换采样 seed：采样阶段强制重新执行（LLM 扩写仍遵循输入缓存）
     _reseed_samplers(prompt)
 
@@ -297,6 +302,7 @@ def start(root, project_id, payload, server):
             if video_id not in prompt:
                 raise ValueError("请选择本工作流的视频输出节点。")
             snapshot = {"prompt": prompt, "loader_id": loader_id, "video_id": video_id,
+                        "image_nodes": payload.get("image_nodes") or [],
                         "workflow": payload.get("workflow") or {},
                         "client_id": str(payload.get("client_id") or "").strip(),
                         "saved_at": time.time()}

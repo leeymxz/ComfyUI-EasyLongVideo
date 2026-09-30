@@ -161,6 +161,24 @@ def register_routes():
                     right["start_sample"] = point
                     left["warnings"] = ["手动拖拽切点，请试听"]
                     right["warnings"] = ["手动拖拽切点，请试听"]
+                elif kind == "visual_type":
+                    vt = str(op.get("visual_type", "performer"))
+                    if vt not in ("performer", "performance", "environment"):
+                        raise ValueError("画面类型无效。")
+                    segments[idx]["visual_type"] = vt
+                    # 画面类型变更 → 重算简报（用户编辑过的简报不覆盖）
+                    if not segments[idx].get("brief_edited"):
+                        segments[idx]["brief"] = lv_camera.segment_brief(
+                            plan["mode"], {}, vt)
+                elif kind == "images":
+                    files = [str(f).strip() for f in (op.get("images") or [])
+                             if str(f).strip()]
+                    import os as _os
+                    clean = []
+                    for f in files[:6]:
+                        if _os.path.basename(f) == f and f not in ("", ".", ".."):
+                            clean.append(f)
+                    segments[idx]["images"] = clean
                 elif kind == "brief":
                     segments[idx]["brief"] = str(op.get("brief", ""))[:8000]
                     segments[idx]["brief_edited"] = True
@@ -229,7 +247,8 @@ def register_routes():
                     seconds, int(plan["fps"]), plan.get("frame_align", "h3"),
                     row["edit_frames"])
                 if not row.get("brief_edited"):
-                    row["brief"] = lv_camera.segment_brief(plan["mode"], state)
+                    row["brief"] = lv_camera.segment_brief(
+                        plan["mode"], state, row.get("visual_type", "performer"))
                     for key in ("start_framing", "end_framing", "start_angle",
                                 "end_angle", "move_family", "move_direction",
                                 "move_type", "band"):

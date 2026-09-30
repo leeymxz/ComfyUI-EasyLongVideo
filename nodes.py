@@ -221,7 +221,9 @@ class EasyLVUnified:
             row["edit_frames"] = lv_segment.edit_frames_for(seconds, fps_int)
             row["generation_frames"] = lv_segment.align_frames(
                 seconds, fps_int, frame_align, row["edit_frames"])
-            row["brief"] = lv_camera.segment_brief(mode, state)
+            row["brief"] = lv_camera.segment_brief(mode, state, "performer")
+            row["visual_type"] = "performer"
+            row["images"] = []
             row["brief_default"] = row["brief"]  # 供面板"恢复默认简报"
             row.update({k: state[k] for k in
                         ("start_framing", "end_framing", "start_angle", "end_angle",
@@ -242,6 +244,11 @@ class EasyLVUnified:
                 row["audio_role_reason"] = (
                     f"段中点位于{hit.get('kind')}（{hit.get('start')}s-{hit.get('end')}s）")
                 row["mute_vocals"] = True
+                if row.get("visual_type", "performer") == "performer":
+                    # 间奏段默认改为"氛围表演"（人物律动但不演唱），可手动改回
+                    row["visual_type"] = "performance"
+                    row["brief"] = lv_camera.segment_brief(mode, {}, "performance")
+                    row["brief_default"] = row["brief"]
                 note = lv_camera.SEGMENT_INTERLUDE_NOTE
                 if note not in row["brief"]:
                     row["brief"] = (row["brief"].rstrip() + "\n" + note)[:8000]

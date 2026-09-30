@@ -247,6 +247,18 @@ function renderSegments(container, plan) {
                     src="/elv/project/${plan.id}/segment/${i}/video?v=${encodeURIComponent(job.completed_at || job.video || "")}"></video>
             </div>` : ""}
             ${row.text ? `<div class="elv-text">${esc(row.text)}</div>` : ""}
+            <div class="elv-seg-head" style="margin-bottom:6px;gap:8px">
+                <label style="font-size:12px;color:#99a">画面类型：
+                    <select class="elv-select" data-act="visual_type" data-i="${i}" style="padding:3px;width:120px">
+                        <option value="performer" ${row.visual_type === "performer" ? "selected" : ""}>演唱/口播</option>
+                        <option value="performance" ${row.visual_type === "performance" ? "selected" : ""}>氛围表演</option>
+                        <option value="environment" ${row.visual_type === "environment" ? "selected" : ""}>空镜</option>
+                    </select></label>
+                <label style="font-size:12px;color:#99a;flex:1">参考图(文件名,逗号分隔,可空)：
+                    <input class="elv-mini" data-act="images" data-i="${i}"
+                        value="${esc((row.images || []).join(","))}"
+                        style="width:220px" placeholder="可选，留空用画布默认图"></label>
+            </div>
             <div class="elv-seg-head" style="margin-bottom:6px">
                 <label style="font-size:12px;color:#99a">本段镜头简报（可直接编辑，失焦自动保存）：</label>
                 ${row.brief_default ? `<button class="elv-btn" data-act="resetbrief" data-i="${i}" style="padding:2px 10px;font-size:12px" ${row.brief_edited ? "" : "disabled"}>↺ 恢复默认简报</button>` : ""}
@@ -480,6 +492,31 @@ function bindSegmentEvents(panel) {
             } catch (err) { alert(err.message); }
         };
     });
+    panel.listEl.querySelectorAll("select[data-act='visual_type']").forEach((sel) => {
+        sel.onchange = async () => {
+            const i = +sel.dataset.i;
+            try {
+                panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
+                    { revision: panel.plan.revision,
+                      operations: [{ op: "visual_type", index: i, visual_type: sel.value }] });
+                panel.noteEl.textContent = `第 ${i + 1} 段画面类型已更新，重新「保存并确认」后生效。`;
+                refresh(panel);
+            } catch (err) { alert(err.message); }
+        };
+    });
+    panel.listEl.querySelectorAll("input[data-act='images']").forEach((inp) => {
+        inp.onchange = async () => {
+            const i = +inp.dataset.i;
+            try {
+                panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
+                    { revision: panel.plan.revision,
+                      operations: [{ op: "images", index: i,
+                                     images: inp.value.split(",") }] });
+                panel.noteEl.textContent = `第 ${i + 1} 段参考图已更新，重新「保存并确认」后生效。`;
+                refresh(panel);
+            } catch (err) { alert(err.message); }
+        };
+    });
     panel.listEl.querySelectorAll(".elv-brief").forEach((ta) => {
         ta.onchange = async () => {
             try {
@@ -506,6 +543,10 @@ async function collectPromptPayload(panel) {
     if (panel.videoSelect && panel.videoSelect.value) videoId = panel.videoSelect.value;
     if (!loaderId) throw new Error("画布中未找到 EasyLVUnified 节点。");
     if (!videoId) throw new Error("请选择视频输出节点（如 VHS Video Combine）。");
+    const imageNodes = [];
+    for (const [id, node] of Object.entries(output || {})) {
+        if (node.class_type === "LoadImage") imageNodes.push(id);
+    }
     // 节点 id → 类型映射：供执行进度显示"正在执行哪个节点"
     try {
         const wfMap = {};
@@ -513,7 +554,7 @@ async function collectPromptPayload(panel) {
         window._elvWorkflowMap = wfMap;
     } catch (err) { /* 显示降级 */ }
     return { prompt: output, workflow, loader_id: loaderId, video_id: videoId,
-             client_id: api.clientId || "" };
+             image_nodes: imageNodes, client_id: api.clientId || "" };
 }
 
 async function refresh(panel) {
