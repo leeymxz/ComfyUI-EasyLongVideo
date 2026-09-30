@@ -224,6 +224,8 @@ function renderSegments(container, plan) {
         div.innerHTML = `
             <div class="elv-seg-head">
                 <span class="elv-seg-title">第 ${i + 1} 段</span>
+                ${row.audio_role === "instrumental" ? `<span class="elv-badge warn">🎵 间奏</span>` : ""}
+                ${row.audio_role === "uncertain" ? `<span class="elv-badge">人声待确认</span>` : ""}
                 <span class="elv-time">${fmt(a)} → ${fmt(b)}（${(b - a).toFixed(1)}s · ${row.generation_frames}帧 · ${esc(row.boundary_kind)}）</span>
                 <audio controls preload="none" data-i="${i}" data-track="source" src="/elv/project/${plan.id}/audio?index=${i}"></audio>
                 <button class="elv-btn" data-act="track" data-i="${i}" style="padding:2px 8px;font-size:11px" title="切换试听分离后的人声">🎤 听人声</button>

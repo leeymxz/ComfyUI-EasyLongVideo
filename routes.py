@@ -361,7 +361,7 @@ def register_routes():
             if plan.get("final_video"):
                 plan["final_stale"] = True
             lv_store.write_plan(root, plan)
-        payload.setdefault("replace_snapshot", False)
+        payload.setdefault("replace_snapshot", True)
         payload["only_segment_index"] = int(payload["index"])
         lv_controller.start(root, pid, payload, server)
         return web.json_response({"started": True, "index": int(payload["index"])})
@@ -592,8 +592,7 @@ def register_routes():
         payload = await request.json()
         root, pid = lv_store.projects_root(), request.match_info["project_id"]
         idx = int(request.match_info["index"])
-        interlude_note = ("本段为间奏（无人声演唱）：人物嘴部保持自然闭合，不唱歌不张嘴，"
-                          "不做出任何演唱口型，仅随音乐轻微律动。")
+        interlude_note = lv_camera.SEGMENT_INTERLUDE_NOTE
         with lv_store.LOCK:
             plan = lv_store.read_plan(root, pid)
             if not 0 <= idx < len(plan["segments"]):

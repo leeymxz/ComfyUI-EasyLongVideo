@@ -229,6 +229,30 @@ class EasyLVUnified:
             row["job"] = {"status": "pending"}
             row["takes"] = []
 
+        # 音频角色标注（吸收原版 7c1241f 思路）：段中点落在无人声区 → 间奏段
+        # 自动施加"静音驱动 + 简报不张嘴"双保险；其余段按识别文字标注 vocal/待确认
+        sections = analysis.get("sections", [])
+        for row in rows:
+            mid = (row["start_sample"] + row["end_sample"]) / 2 / sr
+            hit = next((s for s in sections
+                        if float(s["start"]) <= mid <= float(s["end"])), None)
+            if hit:
+                row["audio_role"] = "instrumental"
+                row["audio_section"] = str(hit.get("kind", "interlude"))
+                row["audio_role_reason"] = (
+                    f"段中点位于{hit.get('kind')}（{hit.get('start')}s-{hit.get('end')}s）")
+                row["mute_vocals"] = True
+                note = lv_camera.SEGMENT_INTERLUDE_NOTE
+                if note not in row["brief"]:
+                    row["brief"] = (row["brief"].rstrip() + "\n" + note)[:8000]
+                row["brief_edited"] = True
+            else:
+                row["audio_role"] = "vocal" if row.get("text") else "uncertain"
+                row["audio_section"] = ""
+                row["audio_role_reason"] = ("含识别人声" if row.get("text")
+                                            else "未识别出文字，人声状态需试听确认")
+                row["mute_vocals"] = False
+
         # 覆盖完整性自检：分段必须首尾相接铺满整条音频
         cursor = 0
         for row in rows:
