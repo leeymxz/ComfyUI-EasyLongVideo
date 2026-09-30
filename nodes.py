@@ -210,29 +210,8 @@ class EasyLVUnified:
             voice, sr, transcript, maximum=float(max_seconds),
             target=float(target_seconds), mix_audio=mix, return_analysis=True)
 
-        fps_int = int(fps)
-        seed = project_id[:12]
-        user_rules = lv_camera.load_rules(lv_store.rules_path())
-        states = lv_camera.camera_sequence(mode, rows, activity=camera_activity,
-                                           widest=widest_framing, seed=seed,
-                                           rules=user_rules)
-        for row, state in zip(rows, states):
-            seconds = (row["end_sample"] - row["start_sample"]) / sr
-            row["edit_frames"] = lv_segment.edit_frames_for(seconds, fps_int)
-            row["generation_frames"] = lv_segment.align_frames(
-                seconds, fps_int, frame_align, row["edit_frames"])
-            row["brief"] = lv_camera.segment_brief(mode, state, "performer")
-            row["visual_type"] = "performer"
-            row["images"] = []
-            row["brief_default"] = row["brief"]  # 供面板"恢复默认简报"
-            row.update({k: state[k] for k in
-                        ("start_framing", "end_framing", "start_angle", "end_angle",
-                         "move_family", "move_direction", "move_type", "band")})
-            row["job"] = {"status": "pending"}
-            row["takes"] = []
-
         # 音频角色标注（吸收原版 7c1241f 思路）：段中点落在无人声区 → 间奏段
-        # 自动施加"静音驱动 + 简报不张嘴"双保险；其余段按识别文字标注 vocal/待确认
+        # 自动施加"静音驱动 + 氛围表演"双保险；其余段按识别文字标注 vocal/待确认
         sections = analysis.get("sections", [])
         for row in rows:
             mid = (row["start_sample"] + row["end_sample"]) / 2 / sr
@@ -244,21 +223,40 @@ class EasyLVUnified:
                 row["audio_role_reason"] = (
                     f"段中点位于{hit.get('kind')}（{hit.get('start')}s-{hit.get('end')}s）")
                 row["mute_vocals"] = True
-                if row.get("visual_type", "performer") == "performer":
-                    # 间奏段默认改为"氛围表演"（人物律动但不演唱），可手动改回
-                    row["visual_type"] = "performance"
-                    row["brief"] = lv_camera.segment_brief(mode, {}, "performance")
-                    row["brief_default"] = row["brief"]
-                note = lv_camera.SEGMENT_INTERLUDE_NOTE
-                if note not in row["brief"]:
-                    row["brief"] = (row["brief"].rstrip() + "\n" + note)[:8000]
-                row["brief_edited"] = True
+                row["visual_type"] = "performance"  # 间奏默认氛围表演（不张嘴），可手动改回
             else:
                 row["audio_role"] = "vocal" if row.get("text") else "uncertain"
                 row["audio_section"] = ""
                 row["audio_role_reason"] = ("含识别人声" if row.get("text")
                                             else "未识别出文字，人声状态需试听确认")
                 row["mute_vocals"] = False
+
+        fps_int = int(fps)
+        seed = project_id[:12]
+        user_rules = lv_camera.load_rules(lv_store.rules_path())
+        states = lv_camera.camera_sequence(mode, rows, activity=camera_activity,
+                                           widest=widest_framing, seed=seed,
+                                           rules=user_rules)
+        for row, state in zip(rows, states):
+            seconds = (row["end_sample"] - row["start_sample"]) / sr
+            row["edit_frames"] = lv_segment.edit_frames_for(seconds, fps_int)
+            row["generation_frames"] = lv_segment.align_frames(
+                seconds, fps_int, frame_align, row["edit_frames"])
+            row.setdefault("visual_type", "performer")
+            row.setdefault("images", [])
+            row["brief"] = lv_camera.segment_brief(
+                mode, state, row.get("visual_type", "performer"))
+            if row.get("audio_role") == "instrumental":
+                note = lv_camera.SEGMENT_INTERLUDE_NOTE
+                if note not in row["brief"]:
+                    row["brief"] = (row["brief"].rstrip() + "\n" + note)[:8000]
+                row["brief_edited"] = True
+            row["brief_default"] = row["brief"]  # 供面板"恢复默认简报"
+            row.update({k: state[k] for k in
+                        ("start_framing", "end_framing", "start_angle", "end_angle",
+                         "move_family", "move_direction", "move_type", "band")})
+            row["job"] = {"status": "pending"}
+            row["takes"] = []
 
         # 覆盖完整性自检：分段必须首尾相接铺满整条音频
         cursor = 0

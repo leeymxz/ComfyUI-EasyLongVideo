@@ -165,6 +165,17 @@ class TestCamera(unittest.TestCase):
             self.assertIn("镜头方案：", brief)
             self.assertIn("表演节奏：", brief)
 
+    def test_brief_visual_types(self):
+        rows = self._rows(3)
+        states = camera_sequence("singing", rows, widest="full shot", seed="vt")
+        b_perf = segment_brief("singing", states[0], "performer")
+        self.assertIn("模式：唱歌", b_perf)
+        b_act = segment_brief("singing", states[0], "performance")
+        self.assertIn("嘴部保持闭合", b_act)
+        b_env = segment_brief("singing", states[0], "environment")
+        self.assertIn("模式：空镜", b_env)
+        self.assertIn("不出现任何人物", b_env)
+
     def test_rules_roundtrip(self):
         # 默认规则 → 校验通过
         rules = validate_rules(default_rules())
