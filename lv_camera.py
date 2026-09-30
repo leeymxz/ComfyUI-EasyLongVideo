@@ -366,9 +366,6 @@ def segment_brief(mode, state, visual_type="performer"):
                   "头顶留白和裁切边界；全程固定机位单一连续镜头，"
                   "背景透视和构图跨段保持一致")
         performance = state["performance"]
-        if visual_type == "performance":
-            performance = ("人物随音乐自然律动（轻微摇摆/点头），嘴部保持闭合，"
-                           "不唱歌不张嘴，目视前方或环境，保持自然状态")
     else:
         opening = (f"{_ZH_SIZE[state['start_framing']]}"
                    f"{_ZH_ANGLE.get(state['start_angle'], state['start_angle'])}开场，"
@@ -384,6 +381,10 @@ def segment_brief(mode, state, visual_type="performer"):
             camera = (f"{opening}；{state['move_text']}；结束于{ending_text}，"
                       f"{state['exit_motion']}至片段结束")
         performance = state["performance"]
+    # 氛围表演（不张嘴）覆盖表演节奏——两种模式通用
+    if visual_type == "performance":
+        performance = ("人物随音乐自然律动（轻微摇摆/点头），嘴部保持闭合，"
+                       "不唱歌不张嘴，目视前方或环境，保持自然状态")
     return (
         f"模式：{'口播' if mode == 'speaking' else '唱歌'}\n"
         f"镜头方案：{camera}\n"
