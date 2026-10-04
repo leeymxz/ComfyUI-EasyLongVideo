@@ -294,7 +294,7 @@ function renderSegments(container, plan) {
                 <label style="font-size:12px;color:#99a">本段镜头简报（可直接编辑，失焦自动保存）：</label>
                 ${row.brief_default ? `<button class="elv-btn" data-act="resetbrief" data-i="${i}" style="padding:2px 10px;font-size:12px" ${row.brief_edited ? "" : "disabled"}>↺ 恢复默认简报</button>` : ""}
             </div>
-            <textarea class="elv-brief" data-i="${i}">${esc(row.brief)}</textarea>
+            <textarea class="elv-brief" data-i="${i}" placeholder="本段镜头简报（可编辑；输入 @图1 可引用参考图，如：@图1 为人物特写，仅作一致性参考）">${esc(row.brief)}</textarea>
             ${(row.warnings || []).map((wn) => `<div class="elv-warn">⚠ ${esc(wn)}</div>`).join("")}
             ${row.resep_error ? `<div class="elv-warn">✖ 本段重分离失败：${esc(row.resep_error)}</div>` : ""}
             ${job.error ? `<div class="elv-warn">✖ ${esc(job.error)}</div>` : ""}`;
@@ -526,10 +526,37 @@ function bindSegmentEvents(panel) {
     panel.listEl.querySelectorAll("select[data-act='visual_type']").forEach((sel) => {
         sel.onchange = async () => {
             const i = +sel.dataset.i;
+            const vt = sel.value;
             try {
+                // 简报预览：先看新简报再决定是否应用
+                const prev = await apiPost(`/elv/project/${panel.projectId}/brief-preview`,
+                    { index: i, visual_type: vt });
+                const ok = await new Promise((resolve) => {
+                    const ov = document.createElement("div");
+                    ov.className = "elv-overlay";
+                    ov.innerHTML = `
+                    <div class="elv-panel" style="width:min(560px,92vw)">
+                        <div class="elv-head"><h3>画面类型预览（第 ${i + 1} 段）</h3>
+                            <button class="elv-close">✕</button></div>
+                        <div class="elv-body">
+                            <div class="elv-hint">即将应用的新简报（应用后可再编辑）：</div>
+                            <textarea class="elv-brief" readonly style="min-height:180px">${esc(prev.brief)}</textarea>
+                        </div>
+                        <div class="elv-foot">
+                            <button class="elv-btn primary" id="elv-pv-ok">✓ 应用</button>
+                            <button class="elv-btn" id="elv-pv-no">取消</button>
+                        </div>
+                    </div>`;
+                    document.body.appendChild(ov);
+                    ov.querySelector(".elv-close").onclick = () => { ov.remove(); resolve(false); };
+                    ov.querySelector("#elv-pv-no").onclick = () => { ov.remove(); resolve(false); };
+                    ov.querySelector("#elv-pv-ok").onclick = () => { ov.remove(); resolve(true); };
+                    ov.addEventListener("mousedown", (e) => { if (e.target === ov) { ov.remove(); resolve(false); } });
+                });
+                if (!ok) { sel.value = panel.plan.segments[i].visual_type || "performer"; return; }
                 panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
                     { revision: panel.plan.revision,
-                      operations: [{ op: "visual_type", index: i, visual_type: sel.value }] });
+                      operations: [{ op: "visual_type", index: i, visual_type: vt }] });
                 panel.noteEl.textContent = `第 ${i + 1} 段画面类型已更新，重新「保存并确认」后生效。`;
                 refresh(panel);
             } catch (err) { alert(err.message); }
@@ -756,12 +783,24 @@ function openPanel(projectId) {
     <div class="elv-panel">
         <div class="elv-head">
             <h3>🎬 长视频分段审核</h3>
+            <button class="elv-btn" id="elv-delete-project" title="删除当前项目（含参考图/音频，需确认）">🗑 删除项目</button>
             <select class="elv-select" id="elv-history" style="max-width:300px"></select>
             <span id="elv-status"></span>
             <button class="elv-close" title="关闭">✕</button>
         </div>
         <div class="elv-body">
             <div class="elv-hint" id="elv-wire" style="display:none;color:#f0c674;background:#2a2416;border:1px solid #4a3a17;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
+            <div class="elv-refs-panel" style="border:1px solid #3a3a40;border-radius:8px;padding:8px 10px;margin-bottom:10px">
+                <div class="elv-hint" style="margin:0 0 6px"><b>项目默认参考图</b>：上传一次，所有用默认的段自动继承；段自定义图保持独立。可输入 <b>@图1</b> 在简报中引用图片。</div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <input type="file" id="elv-ref-upload" accept="image/*" multiple style="font-size:12px;color:#ddd">
+                    <button class="elv-btn" id="elv-ref-copyall" style="padding:2px 10px;font-size:12px">复制默认到全部段</button>
+                    <span class="elv-hint" style="margin:0">默认图：</span>
+                    <input class="elv-mini" id="elv-ref-default" placeholder="默认图文件名" style="width:190px">
+                    <button class="elv-btn" id="elv-ref-apply" style="padding:2px 10px;font-size:12px">应用</button>
+                </div>
+                <div id="elv-ref-list" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
+            </div>
             <div class="elv-warn" id="elv-warns" style="display:none;background:#2a1f16;border:1px solid #4a3517;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
             <div class="elv-errorbox" id="elv-errorbox" style="display:none">
                 <div class="elv-errorbox-head">
@@ -849,6 +888,92 @@ function openPanel(projectId) {
     panel.historyEl.onchange = () => {
         if (panel.historyEl.value) openPanel(panel.historyEl.value);
     };
+    // 删除当前项目（破坏性，二次确认）
+    overlay.querySelector("#elv-delete-project").onclick = async () => {
+        const name = panel.historyEl.selectedOptions?.[0]?.text || panel.projectId;
+        if (!confirm(`确定删除项目「${name}」？\n将删除该项目的音频、分段、参考图与生成记录（不可恢复）。`)) return;
+        if (!confirm("再次确认：此操作不可撤销。")) return;
+        try {
+            await apiPost("/elv/projects/delete", { id: panel.projectId });
+            closePanel();
+            alert("项目已删除。");
+        } catch (err) { alert(err.message); }
+    };
+    // 参考图库：上传 / 列表 / 默认图 / 复制默认到全部段
+    const refList = overlay.querySelector("#elv-ref-list");
+    const renderRefs = async () => {
+        try {
+            const { files } = await apiGet(`/elv/project/${panel.projectId}/refs`);
+            const defs = panel.plan?.default_images || [];
+            refList.innerHTML = files.map((f) => `
+                <div style="border:1px solid #3a3a40;border-radius:6px;padding:4px;width:110px;text-align:center">
+                    <img src="/elv/project/${panel.projectId}/refs/${encodeURIComponent(f)}"
+                        style="width:100px;height:56px;object-fit:cover;border-radius:4px">
+                    <div style="font-size:10px;color:#9aa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(f)}</div>
+                    <div style="display:flex;gap:4px;justify-content:center;margin-top:2px">
+                        <button class="elv-btn" data-refset="${esc(f)}" style="padding:1px 6px;font-size:10px">${defs.includes(f) ? "✓默认" : "默认"}</button>
+                        <button class="elv-btn" data-refdel="${esc(f)}" style="padding:1px 6px;font-size:10px">删</button>
+                    </div>
+                </div>`).join("") || `<div class="elv-hint" style="margin:0">尚未上传参考图。</div>`;
+            refList.querySelectorAll("[data-refset]").forEach((b) => {
+                b.onclick = async () => {
+                    const name = b.dataset.refset;
+                    try {
+                        await apiPost(`/elv/project/${panel.projectId}/settings`,
+                            { default_images: [name] });
+                        renderRefs(); refresh(panel);
+                        panel.noteEl.textContent = `已设为默认图：${name}`;
+                    } catch (err) { alert(err.message); }
+                };
+            });
+            refList.querySelectorAll("[data-refdel]").forEach((b) => {
+                b.onclick = async () => {
+                    const name = b.dataset.refdel;
+                    if (!confirm(`删除参考图 ${name}？`)) return;
+                    try {
+                        await apiPost(`/elv/project/${panel.projectId}/refs/remove`, { name });
+                        renderRefs(); refresh(panel);
+                    } catch (err) { alert(err.message); }
+                };
+            });
+        } catch (err) { /* 忽略 */ }
+    };
+    overlay.querySelector("#elv-ref-upload").onchange = async (e) => {
+        const files = [...(e.target.files || [])];
+        if (!files.length) return;
+        try {
+            for (const file of files) {
+                const fd = new FormData();
+                fd.append("file", file);
+                await fetch(`/elv/project/${panel.projectId}/refs/upload`, { method: "POST", body: fd });
+            }
+            renderRefs();
+            panel.noteEl.textContent = `已上传 ${files.length} 张参考图。`;
+        } catch (err) { alert("上传失败：" + err.message); }
+        e.target.value = "";
+    };
+    overlay.querySelector("#elv-ref-apply").onclick = async () => {
+        const val = overlay.querySelector("#elv-ref-default").value;
+        const list = val.split(",").map((s) => s.trim()).filter(Boolean);
+        try {
+            await apiPost(`/elv/project/${panel.projectId}/settings`, { default_images: list });
+            renderRefs(); refresh(panel);
+            panel.noteEl.textContent = "默认图已更新。";
+        } catch (err) { alert(err.message); }
+    };
+    overlay.querySelector("#elv-ref-copyall").onclick = async () => {
+        const defs = panel.plan?.default_images || [];
+        if (!defs.length) { alert("请先设置默认图。"); return; }
+        if (!confirm(`将默认图复制到全部段？（段的自定义图会被覆盖）`)) return;
+        try {
+            panel.plan = await apiPost(`/elv/project/${panel.projectId}/edit`,
+                { revision: panel.plan.revision,
+                  operations: [{ op: "images_all", images: defs }] });
+            panel.noteEl.textContent = "默认图已复制到全部段。";
+            refresh(panel);
+        } catch (err) { alert(err.message); }
+    };
+    renderRefs();
 
     // 波形切点拖拽 + 视图控制（缩放/平移/定位）
     const waveCanvas = overlay.querySelector("#elv-wave");

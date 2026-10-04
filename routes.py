@@ -5,7 +5,9 @@
 """
 import asyncio
 import json
+import shutil
 import time
+from pathlib import Path
 
 from . import lv_camera, lv_controller, lv_ffmpeg, lv_segment, lv_separate, lv_store
 from .lv_audio import read_wav, write_wav
@@ -76,6 +78,107 @@ def register_routes():
                 for r in plan.get("segments", [])
             ],
         })
+
+    # ------------------------------------------------------------ 项目管理
+
+    @routes.post("/elv/projects/delete")
+    @endpoint
+    async def projects_delete(request):
+        """删除历史项目（含音频/分段/参考图）。运行中的项目禁止删除。"""
+        payload = await request.json()
+        pid = str(payload.get("id") or "")
+        root = lv_store.projects_root()
+        directory = lv_store.project_dir(root, pid)
+        if pid in lv_controller.TASKS:
+            raise ValueError("该项目正在生成中，不能删除。")
+        with lv_store.LOCK:
+            shutil.rmtree(directory, ignore_errors=True)
+        return web.json_response({"deleted": pid})
+
+    # ------------------------------------------------------------ 参考图库
+
+    _REF_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".avif")
+
+    @routes.post("/elv/project/{project_id}/refs/upload")
+    @endpoint
+    async def refs_upload(request):
+        """上传参考图到项目目录 refs/（供默认图与段引用）。"""
+        pid = request.match_info["project_id"]
+        directory = lv_store.project_dir(lv_store.projects_root(), pid)
+        refs_dir = directory / "refs"
+        refs_dir.mkdir(parents=True, exist_ok=True)
+        reader = await request.multipart()
+        field = await reader.next()
+        if field is None or field.name != "file":
+            raise ValueError("缺少文件字段（name=file）。")
+        filename = Path(field.filename or "").name
+        if not filename.lower().endswith(_REF_SUFFIXES):
+            raise ValueError("仅支持图片格式：" + ", ".join(_REF_SUFFIXES))
+        # 带项目前缀，避免多项目同名图冲突；同时写入 input 目录供 LoadImage 使用
+        stored = f"{pid[:8]}_{filename}"
+        target = refs_dir / stored
+        size = 0
+        with open(target, "wb") as handle:
+            while True:
+                chunk = await field.read_chunk(8192)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > 40 * 1024 * 1024:
+                    handle.close()
+                    target.unlink(missing_ok=True)
+                    raise ValueError("图片超过 40MB 限制。")
+                handle.write(chunk)
+        try:
+            import folder_paths
+            input_dir = Path(folder_paths.get_input_directory())
+            shutil.copy2(target, input_dir / stored)
+        except Exception:
+            pass
+        return web.json_response({"name": stored})
+
+    @routes.get("/elv/project/{project_id}/refs")
+    @endpoint
+    async def refs_list(request):
+        pid = request.match_info["project_id"]
+        directory = lv_store.project_dir(lv_store.projects_root(), pid)
+        refs_dir = directory / "refs"
+        files = sorted((p.name for p in refs_dir.iterdir())
+                       if refs_dir.is_dir() else [])
+        return web.json_response({"files": files})
+
+    @routes.get("/elv/project/{project_id}/refs/{name}")
+    @endpoint
+    async def refs_view(request):
+        pid = request.match_info["project_id"]
+        name = Path(request.match_info["name"]).name
+        directory = lv_store.project_dir(lv_store.projects_root(), pid)
+        path = directory / "refs" / name
+        if not path.is_file():
+            raise FileNotFoundError(str(path))
+        return web.FileResponse(path, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/elv/project/{project_id}/refs/remove")
+    @endpoint
+    async def refs_remove(request):
+        payload = await request.json()
+        pid = request.match_info["project_id"]
+        name = Path(str(payload.get("name") or "")).name
+        directory = lv_store.project_dir(lv_store.projects_root(), pid)
+        path = directory / "refs" / name
+        removed = False
+        with lv_store.LOCK:
+            if path.is_file():
+                path.unlink(missing_ok=True)
+                removed = True
+            # 同步清理 input 目录副本
+            try:
+                import folder_paths
+                input_dir = Path(folder_paths.get_input_directory())
+                (input_dir / name).unlink(missing_ok=True)
+            except Exception:
+                pass
+        return web.json_response({"removed": name, "existed": removed})
 
     @routes.get("/elv/project/{project_id}/analysis")
     @endpoint
@@ -170,6 +273,15 @@ def register_routes():
                     if not segments[idx].get("brief_edited"):
                         segments[idx]["brief"] = lv_camera.segment_brief(
                             plan["mode"], {}, vt)
+                elif kind == "images_all":
+                    import os as _os
+                    files = []
+                    for f in (op.get("images") or []):
+                        f = str(f).strip()
+                        if _os.path.basename(f) == f and f and f not in ("", ".", ".."):
+                            files.append(f)
+                    for row_all in segments:
+                        row_all["images"] = list(files[:6])
                 elif kind == "images":
                     files = [str(f).strip() for f in (op.get("images") or [])
                              if str(f).strip()]
@@ -280,11 +392,19 @@ def register_routes():
                     r'[\\/:*?"<>|]', "_", str(payload["export_prefix"] or "").strip())[:60]
             if "export_to_downloads" in payload:
                 plan["export_to_downloads"] = bool(payload["export_to_downloads"])
+            if "default_images" in payload:
+                files = []
+                for f in (payload.get("default_images") or []):
+                    f = str(f).strip()
+                    if Path(f).name == f and f and f not in (".", ".."):
+                        files.append(f)
+                plan["default_images"] = files[:6]
             lv_store.write_plan(root, plan)
         return web.json_response({"auto_retry": plan.get("auto_retry", 0),
                                   "vocals_gate_thr_scale": plan.get("vocals_gate_thr_scale", 0.22),
                                   "export_prefix": plan.get("export_prefix", ""),
-                                  "export_to_downloads": plan.get("export_to_downloads", False)})
+                                  "export_to_downloads": plan.get("export_to_downloads", False),
+                                  "default_images": plan.get("default_images", [])})
 
     # ------------------------------------------------------------ 音频试听
 
@@ -677,6 +797,33 @@ def register_routes():
         if not str(video.resolve()).startswith(str(output_root)):
             raise ValueError("视频文件不在 output 目录内，拒绝访问。")
         return web.FileResponse(video, headers={"Cache-Control": "no-store"})
+
+    @routes.post("/elv/project/{project_id}/brief-preview")
+    @endpoint
+    async def brief_preview(request):
+        """预览画面类型/参数变化后的新简报（不保存）。"""
+        payload = await request.json()
+        root, pid = lv_store.projects_root(), request.match_info["project_id"]
+        plan = lv_store.read_plan(root, pid)
+        idx = int(payload.get("index", 0))
+        if not 0 <= idx < len(plan["segments"]):
+            raise ValueError("分段编号超出范围。")
+        vt = str(payload.get("visual_type", "performer"))
+        if vt not in ("performer", "performance", "environment"):
+            raise ValueError("画面类型无效。")
+        state = {k: plan["segments"][idx].get(k) for k in
+                 ("start_framing", "end_framing", "start_angle", "end_angle",
+                  "move_text", "move_family", "exit_motion")}
+        mode = plan["mode"]
+        # 无运镜状态时按固定机位简化预览（画面类型改动不依赖运镜细节）
+        if not state.get("move_text"):
+            state = {"start_framing": "medium close-up", "end_framing": "medium close-up",
+                     "start_angle": "front", "end_angle": "front",
+                     "move_text": "固定机位，构图保持稳定", "move_family": "steady",
+                     "exit_motion": "静止"}
+        return web.json_response({
+            "brief": lv_camera.segment_brief(mode, state, vt),
+            "visual_type": vt})
 
     @routes.post("/elv/project/{project_id}/reveal-final")
     @endpoint

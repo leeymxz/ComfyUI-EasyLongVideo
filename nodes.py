@@ -414,6 +414,9 @@ class EasyLVBriefToPrompt:
                 "reference_notes": ("STRING", {"multiline": True, "default": "",
                     "tooltip": "参考图职责说明，如：Picture 1 is the performer together "
                                "with the scene; Picture 2 is the environment."}),
+                "manual_prompt": ("STRING", {"multiline": True, "default": "",
+                    "tooltip": "手动指定提示词内容：填了就直接用它作为输出（跳过规则转换），"
+                               "适合高级用户完全自控。"}),
                 "language": (["english", "chinese"],),
             },
         }
@@ -423,7 +426,10 @@ class EasyLVBriefToPrompt:
     FUNCTION = "convert"
     CATEGORY = "长视频/EasyLongVideo"
 
-    def convert(self, segment_brief, reference_notes="", language="english"):
+    def convert(self, segment_brief, reference_notes="", language="english",
+                manual_prompt=""):
+        if str(manual_prompt or "").strip():
+            return (str(manual_prompt).strip(),)
         text = lv_prompt.to_prompt(segment_brief, reference_notes=reference_notes,
                                    language=language)
         return (text,)

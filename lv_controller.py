@@ -110,8 +110,8 @@ async def _run_one(root, project_id, index, directory, output_root, server):
     loader_id, video_id = snapshot["loader_id"], snapshot["video_id"]
     prompt[loader_id]["inputs"]["project_id"] = project_id
     prompt[loader_id]["inputs"]["segment_index"] = index
-    # 分段自定义参考图：把该段 images 列表按序替换快照中的 LoadImage 节点
-    seg_images = row.get("images") or []
+    # 分段自定义参考图：优先段级 images，其次项目默认图，替换快照中的 LoadImage
+    seg_images = row.get("images") or plan.get("default_images") or []
     for k, node_id in enumerate(snapshot.get("image_nodes") or []):
         if k < len(seg_images):
             prompt[str(node_id)]["inputs"]["image"] = seg_images[k]
