@@ -21,7 +21,8 @@ import uuid
 import numpy as np
 import torch
 
-from . import lv_asr, lv_camera, lv_ffmpeg, lv_prompt, lv_segment, lv_separate, lv_store
+from . import (lv_abc, lv_asr, lv_camera, lv_ffmpeg, lv_prompt,
+               lv_segment, lv_separate, lv_store)
 from .lv_audio import audio_tensor_to_numpy, read_wav, write_wav
 
 
@@ -117,6 +118,9 @@ class EasyLVUnified:
             "optional": {
                 "vocals": ("AUDIO",),
                 "voice_separation": (["auto", "off"],),
+                "abc_text": ("STRING", {"multiline": True, "default": "",
+                    "tooltip": "可选 ABC 谱文本：解析段落结构（Intro/Interlude/Verse 等），"
+                               "增强间奏判定并给简报注入音乐上下文。"}),
             },
         }
 
@@ -142,7 +146,7 @@ class EasyLVUnified:
 
     def _analyze(self, audio, mode, target_seconds, max_seconds, fps, frame_align,
                  asr_mode, asr_model, asr_device, camera_activity, widest_framing,
-                 vocals, voice_separation="auto"):
+                 vocals, voice_separation="auto", abc_text=""):
         mix, sr = audio_tensor_to_numpy(audio)
         if float(max_seconds) < float(target_seconds):
             raise ValueError("最长时长不能小于目标时长。")
@@ -210,9 +214,28 @@ class EasyLVUnified:
             voice, sr, transcript, maximum=float(max_seconds),
             target=float(target_seconds), mix_audio=mix, return_analysis=True)
 
+        # ---- ABC 谱（可选）：解析段落结构，增强间奏判定 ----
+        abc_info = None
+        if str(abc_text or "").strip():
+            abc_info = lv_abc.parse_abc(str(abc_text))
+            if abc_info:
+                warnings.append("已加载 ABC 谱：{} 个小节 / {} 个乐段（结构感知增强分段）。"
+                                .format(abc_info["bar_count"], len(abc_info["structure"])))
+            else:
+                warnings.append("ABC 谱解析失败，已使用纯声学分段。")
+        duration_s = len(mix) / sr
+        abc_sections = []
+        if abc_info:
+            for s in abc_info["structure"]:
+                if s["kind"] in ("intro", "interlude", "outro"):
+                    abc_sections.append({
+                        "start": (s["bar_start"] - 1) / abc_info["bar_count"] * duration_s,
+                        "end": s["bar_end"] / abc_info["bar_count"] * duration_s,
+                        "kind": s["kind"], "zh": s["zh"], "label": s["label"]})
+
         # 音频角色标注（吸收原版 7c1241f 思路）：段中点落在无人声区 → 间奏段
         # 自动施加"静音驱动 + 氛围表演"双保险；其余段按识别文字标注 vocal/待确认
-        sections = analysis.get("sections", [])
+        sections = abc_sections or analysis.get("sections", [])
         for row in rows:
             mid = (row["start_sample"] + row["end_sample"]) / 2 / sr
             hit = next((s for s in sections
@@ -251,6 +274,23 @@ class EasyLVUnified:
                 if note not in row["brief"]:
                     row["brief"] = (row["brief"].rstrip() + "\n" + note)[:8000]
                 row["brief_edited"] = True
+            # ABC 音乐上下文：段中点落在的 ABC 乐段 → 注入结构/旋律信息
+            if abc_info:
+                mid_t = (row["start_sample"] + row["end_sample"]) / 2 / sr
+                for s in abc_info["structure"]:
+                    a = (s["bar_start"] - 1) / abc_info["bar_count"] * duration_s
+                    b = s["bar_end"] / abc_info["bar_count"] * duration_s
+                    if a <= mid_t <= b:
+                        feat = s["features"]
+                        ctx = ("音乐上下文：此段为{}（{}），小节 {}-{}，音符密度 {}"
+                               .format(s["zh"], s["label"] or s["kind"],
+                                       s["bar_start"], s["bar_end"], feat["note_count"])
+                               + (f"，音高跨度 {feat['pitch_span']} 半音"
+                                  if feat["pitch_span"] else ""))
+                        if ctx not in row["brief"]:
+                            row["brief"] = (row["brief"].rstrip() + "\n" + ctx)[:8000]
+                        row["brief_edited"] = True
+                        break
             row["brief_default"] = row["brief"]  # 供面板"恢复默认简报"
             row.update({k: state[k] for k in
                         ("start_framing", "end_framing", "start_angle", "end_angle",
@@ -284,6 +324,13 @@ class EasyLVUnified:
             "max_seconds": float(max_seconds), "target_seconds": float(target_seconds),
             "sample_rate": sr, "samples": int(len(mix)),
             "duration": len(mix) / sr,
+            "bpm": lv_segment.estimate_bpm(voice, sr),
+            "abc_structure": ([{"kind": s["kind"], "zh": s["zh"],
+                                "label": s["label"] or "",
+                                "bar_start": s["bar_start"],
+                                "bar_end": s["bar_end"]}
+                               for s in abc_info["structure"]]
+                              if abc_info else None),
             "asr": {"available": lv_asr.is_available(),
                     "used": transcript is not None,
                     "model": lv_asr.resolve_model(asr_model) if transcript else None},
@@ -325,7 +372,8 @@ class EasyLVUnified:
 
     def run(self, audio, mode, target_seconds, max_seconds, fps, frame_align,
             asr_mode, asr_model, asr_device, camera_activity, widest_framing,
-            project_id="", segment_index=0, vocals=None, voice_separation="auto"):
+            project_id="", segment_index=0, vocals=None, voice_separation="auto",
+            abc_text=""):
         project_id = str(project_id or "").strip()
         if project_id:
             try:
@@ -338,7 +386,7 @@ class EasyLVUnified:
             project_id, count, warnings = self._analyze(
                 audio, mode, target_seconds, max_seconds, fps, frame_align,
                 asr_mode, asr_model, asr_device, camera_activity, widest_framing,
-                vocals, voice_separation=voice_separation)
+                vocals, voice_separation=voice_separation, abc_text=abc_text)
         except lv_ffmpeg.FFmpegNotFound:  # 理论上分析阶段不会触发；防御性兜底
             raise
         note = f"分析完成：共 {count} 段。已弹出分段审核面板，请试听并确认后开始生成。"

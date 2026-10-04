@@ -13,6 +13,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from lv_abc import parse_abc, melody_to_jianpu  # noqa: E402
 from lv_audio import read_wav, wav_bytes, write_wav  # noqa: E402
 from lv_camera import (camera_sequence, default_rules, segment_brief,  # noqa: E402
                        load_rules, save_rules, validate_rules)
@@ -247,6 +248,40 @@ class TestPrompt(unittest.TestCase):
         brief = self._singing_brief()
         prompt = to_prompt(brief, reference_notes="Picture 1 = performer and scene.")
         self.assertIn("Picture 1 = performer and scene.", prompt)
+
+
+class TestABC(unittest.TestCase):
+    def test_parse_structure(self):
+        abc = """X:1
+T:Test Song
+M:4/4
+L:1/8
+K:C
+% intro
+|: C2 E2 G2 E2 | F2 A2 c2 A2 |
+P:Verse
+|: G2 B2 d2 B2 | c2 e2 g2 e2 |
+|: c2 c2 c2 c2 | G2 G2 G2 G2 |
+% interlude
+|: z4 z4 | z4 z4 |
+% outro
+|: C2 C2 C2 C2 | z4 z4 |"""
+        info = parse_abc(abc)
+        self.assertIsNotNone(info)
+        self.assertGreaterEqual(info["bar_count"], 8)
+        kinds = [s["kind"] for s in info["structure"]]
+        self.assertIn("intro", kinds)
+        self.assertIn("verse", kinds)
+        self.assertIn("interlude", kinds)
+        self.assertIn("outro", kinds)
+        # 结构比例单调递增
+        bars = [(s["bar_start"], s["bar_end"]) for s in info["structure"]]
+        self.assertEqual(bars[0][0], 1)
+
+    def test_melody_to_jianpu(self):
+        jp = melody_to_jianpu("C E G c' |")
+        self.assertIn("1", jp)
+        self.assertIn("3", jp)
 
 
 class TestReseed(unittest.TestCase):

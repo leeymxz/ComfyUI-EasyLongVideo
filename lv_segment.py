@@ -355,6 +355,29 @@ def edit_frames_for(seconds, fps=24):
     return max(1, int(math.ceil(float(seconds) * int(fps))))
 
 
+def estimate_bpm(audio, sr, hop_seconds=HOP_SECONDS):
+    """基于能量包络的轻量 BPM 估计（仅供参考）。
+
+    对 dB 包络做去均值自相关，在 70~180 BPM 的滞后范围内找最大相关峰。
+    """
+    starts, db = envelope(audio, sr, hop_seconds)
+    x = db - np.mean(db)
+    best_lag, best_corr = 0, -1.0
+    min_lag = max(1, int((60.0 / 180.0) / hop_seconds))   # 180 BPM
+    max_lag = min(len(x) - 1, int((60.0 / 70.0) / hop_seconds))  # 70 BPM
+    if max_lag <= min_lag or len(x) < max_lag * 2:
+        return None
+    for lag in range(min_lag, max_lag + 1):
+        a1, a2 = x[:-lag], x[lag:]
+        denom = np.sqrt(np.dot(a1, a1) * np.dot(a2, a2)) or 1.0
+        corr = float(np.dot(a1, a2) / denom)
+        if corr > best_corr:
+            best_corr, best_lag = corr, lag
+    if best_corr < 0.15:
+        return None
+    return round(60.0 / (best_lag * hop_seconds))
+
+
 def padded_samples(frames, sr, fps=24):
     """给定帧数对应需要补齐到的采样点数（向上取整）。"""
     fps = int(fps)

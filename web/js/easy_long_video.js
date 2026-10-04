@@ -123,13 +123,18 @@ const esc = (t) => String(t ?? "").replace(/[&<>"]/g,
 
 // ---------------------------------------------------------------- 波形
 
-function drawWave(canvas, analysis, plan, dragCut) {
+function drawWave(canvas, analysis, plan, dragCut, view) {
     if (!canvas || !analysis?.waveform) return;
     const ctx = canvas.getContext("2d");
     const w = canvas.width = canvas.clientWidth * devicePixelRatio;
     const h = canvas.height = (canvas.clientHeight || 110) * devicePixelRatio;
     ctx.clearRect(0, 0, w, h);
     const dur = analysis.duration || plan.duration || 1;
+    // 视图范围（秒），view = {a, b}；缺省全曲
+    const va = Math.max(0, Math.min((view?.a ?? 0), dur - 1e-6));
+    const vb = Math.max(va + 1e-6, Math.min((view?.b ?? dur), dur));
+    const vlen = vb - va;
+    const t2x = (t) => ((t - va) / vlen) * w;
     const dual = !!analysis.waveform.vocals;
     const half = dual ? h / 2 : h;
     // 记录切点时间（秒），供拖拽命中
@@ -137,31 +142,57 @@ function drawWave(canvas, analysis, plan, dragCut) {
         .map((r) => r.start_sample / plan.sample_rate);
 
     function drawTrack(peaks, color, y0, hh, alpha) {
+        if (!peaks?.length) return;
         ctx.fillStyle = color;
         ctx.globalAlpha = alpha;
-        const bw = Math.max(1, w / peaks.length - 0.5);
-        peaks.forEach((p, i) => {
-            const bh = Math.max(1, p * hh * 0.92);
-            ctx.fillRect((i / peaks.length) * w, y0 + (hh - bh) / 2, bw, bh);
-        });
+        // 只绘制可见范围内的 bins（性能优化）
+        const n = peaks.length;
+        const i0 = Math.max(0, Math.floor((va / dur) * n) - 2);
+        const i1 = Math.min(n, Math.ceil((vb / dur) * n) + 2);
+        const bw = Math.max(1, w / Math.max(1, i1 - i0) - 0.5);
+        for (let i = i0; i < i1; i++) {
+            const t = (i / n) * dur;
+            if (t < va || t > vb) continue;
+            const x = t2x(t);
+            const bh = Math.max(1, peaks[i] * hh * 0.92);
+            ctx.fillRect(x, y0 + (hh - bh) / 2, bw, bh);
+        }
         ctx.globalAlpha = 1;
     }
+    // 无人声区（前奏/间奏/尾奏）高亮
+    (analysis.sections || []).forEach((sec) => {
+        const a = Math.max(va, sec.start), b = Math.min(vb, sec.end);
+        if (b <= a) return;
+        const x0 = t2x(a), x1 = t2x(b);
+        ctx.fillStyle = "rgba(180,120,200,0.14)";
+        ctx.fillRect(x0, 0, Math.max(1, x1 - x0), h);
+        ctx.font = `${10 * devicePixelRatio}px sans-serif`;
+        ctx.fillStyle = "rgba(220,170,255,0.9)";
+        ctx.fillText(sec.kind === "intro" ? "前奏" : sec.kind === "outro" ? "尾奏" : "间奏",
+            x0 + 4 * devicePixelRatio, h - 6);
+    });
     // 上：原曲（蓝）；下：人声（绿）
     drawTrack(analysis.waveform.original || [], "#3d5a80", 0, half, 0.95);
     if (dual) drawTrack(analysis.waveform.vocals, "#2e7d5b", half, h - half, 0.95);
 
     // 切点线 + 拖拽手柄 + 段标签
     (plan.segments || []).forEach((row, i) => {
-        const x0 = (row.start_sample / plan.sample_rate) / dur * w;
+        const t0 = row.start_sample / plan.sample_rate;
+        const x0 = t2x(t0);
+        if (x0 < -20 || x0 > w + 20) return; // 视口外跳过
         const dragging = dragCut && dragCut.boundary === i;
         if (i > 0) {
-            const px = dragging ? (dragCut.t / dur) * w : x0;
-            ctx.fillStyle = dragging ? "#ffd54a" : "#e05656";
+            const px = dragging ? t2x(dragCut.t) : x0;
+            // 切点按类型着色：无人声区边界=绿，普通=红
+            const kind = String(row.boundary_kind || "");
+            const color = dragging ? "#ffd54a"
+                : kind.includes("section") ? "#3ddc84" : "#e05656";
+            ctx.fillStyle = color;
             ctx.fillRect(px - devicePixelRatio, 0, Math.max(2, 2 * devicePixelRatio), h);
-            // 手柄圆点
             ctx.beginPath();
             ctx.arc(px, 9 * devicePixelRatio, 6 * devicePixelRatio, 0, Math.PI * 2);
-            ctx.fillStyle = dragging ? "#ffd54a" : "#ff8080";
+            ctx.fillStyle = dragging ? "#ffd54a"
+                : kind.includes("section") ? "#4fe39a" : "#ff8080";
             ctx.fill();
             ctx.strokeStyle = "#222"; ctx.stroke();
             if (dragging) {
@@ -172,7 +203,7 @@ function drawWave(canvas, analysis, plan, dragCut) {
                 ctx.fillText(tt, tx, 14 * devicePixelRatio);
             }
         }
-        if (i > 0 || true) {
+        if (x0 >= -20 && x0 <= w + 20) {
             const label = `第${i + 1}段`;
             ctx.font = `${11 * devicePixelRatio}px sans-serif`;
             const tw = ctx.measureText(label).width;
@@ -656,9 +687,13 @@ async function refresh(panel) {
             if (a.sections?.length) stats.push(`${a.sections.length} 段疑似无人声区`);
             if (a.protected_words?.length) stats.push(`${a.protected_words.length} 个受保护词`);
         }
-        stats.push(`${done}/${plan.segments.length} 段已生成`);
-        if (lowConf) stats.push(`⚠ ${lowConf} 个低置信切点（请试听）`);
-        if (plan.separation) stats.push(`人声:${plan.separation}`);
+            stats.push(`${done}/${plan.segments.length} 段已生成`);
+            if (lowConf) stats.push(`⚠ ${lowConf} 个低置信切点（请试听）`);
+            if (plan.bpm) stats.push(`约 ${Math.round(plan.bpm)} BPM`);
+            if (plan.abc_structure?.length) {
+                stats.push("结构:" + plan.abc_structure.map((s) => s.zh).join("→"));
+            }
+            if (plan.separation) stats.push(`人声:${plan.separation}`);
         const diagEl = panel.overlay.querySelector("#elv-diag");
         if (diagEl) diagEl.innerHTML = `<span class="elv-hint" style="margin:0">诊断：${stats.map(esc).join(" · ")}</span>`;
         panel.btnRun.disabled = running;
@@ -737,6 +772,15 @@ function openPanel(projectId) {
                 </div>
                 <pre id="elv-error-text"></pre>
             </div>
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
+                <button class="elv-btn" data-v="all" style="padding:2px 10px;font-size:12px">全曲</button>
+                <button class="elv-btn" data-v="zoomout" style="padding:2px 10px;font-size:12px">－ 缩小</button>
+                <button class="elv-btn" data-v="zoomin" style="padding:2px 10px;font-size:12px">＋ 放大</button>
+                <button class="elv-btn" data-v="seg" style="padding:2px 10px;font-size:12px">当前段</button>
+                <button class="elv-btn" data-v="cut" style="padding:2px 10px;font-size:12px">切点附近</button>
+                <select class="elv-select" id="elv-view-seg" style="padding:2px;width:130px"></select>
+                <span class="elv-hint" style="margin:0">双击放大 · Ctrl+滚轮缩放 · Shift+滚轮横移 · 拖动彩线调切点</span>
+            </div>
             <canvas class="elv-wave" id="elv-wave" height="110"></canvas>
             <div class="elv-hint" id="elv-wavelabel"></div>
             <div id="elv-diag" style="margin:2px 0 6px"></div>
@@ -806,9 +850,67 @@ function openPanel(projectId) {
         if (panel.historyEl.value) openPanel(panel.historyEl.value);
     };
 
-    // 波形切点拖拽：mousedown 命中切点手柄 → 移动 → mouseup 保存
+    // 波形切点拖拽 + 视图控制（缩放/平移/定位）
     const waveCanvas = overlay.querySelector("#elv-wave");
     let drag = null;
+    panel.view = { a: 0, b: 0 };
+    panel.focusSeg = 0;
+    const viewDur = () => panel.analysis?.duration || panel.plan?.duration || 1;
+    const setView = (a, b) => {
+        const dur = viewDur();
+        const na = Math.max(0, Math.min(a, dur));
+        const nb = Math.max(na + 0.5, Math.min(b, dur));
+        panel.view = { a: na, b: nb };
+        drawWave(waveCanvas, panel.analysis, panel.plan, null, panel.view);
+    };
+    const focusSegTime = (i) => {
+        const r = panel.plan?.segments?.[i];
+        if (!r) return null;
+        const sr = panel.plan.sample_rate;
+        return [r.start_sample / sr, r.end_sample / sr];
+    };
+    overlay.querySelectorAll("[data-v]").forEach((btn) => {
+        btn.onclick = () => {
+            const dur = viewDur();
+            const mid = (panel.view.a + panel.view.b) / 2;
+            const span = panel.view.b - panel.view.a;
+            if (btn.dataset.v === "all") setView(0, dur);
+            else if (btn.dataset.v === "zoomout") setView(mid - span * 0.75, mid + span * 0.75);
+            else if (btn.dataset.v === "zoomin") setView(mid - span * 0.35, mid + span * 0.35);
+            else if (btn.dataset.v === "seg") {
+                const t = focusSegTime(panel.focusSeg);
+                if (t) setView(t[0], t[1]);
+            } else if (btn.dataset.v === "cut") {
+                const t = focusSegTime(panel.focusSeg);
+                if (t) setView(Math.max(0, t[0] - 4), Math.min(dur, t[0] + 4));
+            }
+        };
+    });
+    const viewSeg = overlay.querySelector("#elv-view-seg");
+    viewSeg.onchange = () => {
+        panel.focusSeg = +viewSeg.value || 0;
+        const t = focusSegTime(panel.focusSeg);
+        if (t) setView(t[0], t[1]);
+    };
+    // 双击放大 / Ctrl+滚轮缩放 / Shift+滚轮横移
+    waveCanvas.addEventListener("dblclick", (e) => {
+        const rect = waveCanvas.getBoundingClientRect();
+        const t = panel.view.a + ((e.clientX - rect.left) / rect.width) * (panel.view.b - panel.view.a);
+        const span = (panel.view.b - panel.view.a) / 1.6;
+        setView(t - span / 2, t + span / 2);
+    });
+    waveCanvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        const span = panel.view.b - panel.view.a;
+        if (e.ctrlKey) {
+            const factor = e.deltaY > 0 ? 1.25 : 1 / 1.25;
+            const mid = (panel.view.a + panel.view.b) / 2;
+            setView(mid - span * factor / 2, mid + span * factor / 2);
+        } else if (e.shiftKey) {
+            const dx = (e.deltaY / waveCanvas.clientHeight) * span;
+            setView(panel.view.a + dx, panel.view.b + dx);
+        }
+    }, { passive: false });
     const cutFromX = (clientX) => {
         const rect = waveCanvas.getBoundingClientRect();
         return Math.max(0, Math.min(panel.plan.duration,
@@ -834,7 +936,7 @@ function openPanel(projectId) {
     waveCanvas.addEventListener("mousemove", (e) => {
         if (!drag) return;
         drag.t = cutFromX(e.clientX);
-        drawWave(waveCanvas, panel.analysis, panel.plan, drag);
+        drawWave(waveCanvas, panel.analysis, panel.plan, drag, panel.view);
     });
     window.addEventListener("mouseup", () => {
         if (!drag) return;
@@ -1170,7 +1272,14 @@ async function loadWaveAndMaybeOpen(node, projectId) {
         if (panel) {
             panel.plan = plan;
             panel.analysis = analysis;
-            drawWave(panel.overlay.querySelector("#elv-wave"), analysis, plan);
+            panel.view = panel.view || { a: 0, b: analysis.duration || plan.duration || 1 };
+            // 段定位下拉
+            const vs = panel.overlay.querySelector("#elv-view-seg");
+            if (vs) {
+                vs.innerHTML = plan.segments.map((_, si) =>
+                    `<option value="${si}" ${si === panel.focusSeg ? "selected" : ""}>第 ${si + 1} 段</option>`).join("");
+            }
+            drawWave(panel.overlay.querySelector("#elv-wave"), analysis, plan, null, panel.view);
             const wl = panel.overlay.querySelector("#elv-wavelabel");
             if (wl) {
                 const dual = !!analysis.waveform?.vocals;
