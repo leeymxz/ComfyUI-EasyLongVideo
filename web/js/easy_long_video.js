@@ -682,11 +682,14 @@ function updateMsgbar(panel, st, plan) {
 
 async function refresh(panel) {
     try {
-        // —— 轻量状态轮询：方案/段状态无变化时跳过全量渲染 ——
-        const st = await apiGet(`/elv/project/${panel.projectId}/status`);
-        const sig = JSON.stringify(st.segments_sig);
-        const fullNeeded = !panel.plan || st.revision !== panel._rev || sig !== panel._segSig;
-        panel._rev = st.revision;
+        // —— 轻量状态轮询：后端旧版无 /status 时自动回退全量，避免白屏 ——
+        let st = null;
+        try {
+            st = await apiGet(`/elv/project/${panel.projectId}/status`);
+        } catch (err) { /* 兼容旧后端 */ }
+        const sig = JSON.stringify(st?.segments_sig || []);
+        const fullNeeded = !panel.plan || !st || st.revision !== panel._rev || sig !== panel._segSig;
+        if (st) panel._rev = st.revision;
         panel._segSig = sig;
         if (!fullNeeded) {
             const sepFast = st.separation_status === "running" ? " · 分离中…"
@@ -719,7 +722,9 @@ async function refresh(panel) {
             panel.resSepBtn.style.display = plan.mode === "singing" ? "inline-block" : "none";
             panel.resSepBtn.disabled = plan.separation_status === "running";
         }
-        updateMsgbar(panel, st, plan);
+        updateMsgbar(panel, st || { error: plan.error,
+                                    separation_error: plan.separation_error },
+                     plan);
         renderSegments(panel.listEl, plan);
         bindSegmentEvents(panel);
         // 桌面通知：状态变为失败时提醒一次
