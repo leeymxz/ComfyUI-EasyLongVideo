@@ -98,6 +98,13 @@ function injectStyles() {
     .elv-errorbox pre { max-height: 170px; overflow-y: auto; white-space: pre-wrap;
         word-break: break-all; font-size: 11px; color: #ffb0b0; margin: 6px 0 0;
         line-height: 1.5; scrollbar-width: thin; }
+    .elv-msgbar { border: 1px solid #3a3a40; border-radius: 8px; padding: 6px 10px;
+        margin: 0 0 10px; background: #1f1f24; }
+    .elv-msgbar-head { display: flex; align-items: center; gap: 8px; cursor: pointer;
+        user-select: none; }
+    .elv-msgbar-body { margin-top: 6px; }
+    .elv-msgbar-body .elv-hint.wire { color:#f0c674; background:#2a2416;
+        border:1px solid #4a3a17; border-radius:8px; padding:8px 10px; margin-bottom:8px; }
     `;
     document.head.appendChild(style);
 }
@@ -615,6 +622,64 @@ async function collectPromptPayload(panel) {
              image_nodes: imageNodes, client_id: api.clientId || "" };
 }
 
+// 消息条：报错/警告/接线提醒收纳为可折叠条（顶部只留计数徽章，点击展开）
+function updateMsgbar(panel, st, plan) {
+    const mb = panel.overlay.querySelector("#elv-msgbar");
+    if (!mb) return;
+    const warns = (plan?.warnings || []);
+    const hasErr = !!(st?.error || st?.separation_error);
+    const wireOn = plan?.mode === "singing";
+    const count = (st?.error ? 1 : 0) + (st?.separation_error ? 1 : 0) + warns.length;
+    const countEl = mb.querySelector("#elv-msgcount");
+    countEl.className = `elv-badge ${hasErr ? "err" : "warn"}`;
+    countEl.style.display = (count || wireOn) ? "inline-block" : "none";
+    countEl.textContent = count ? `⚠ ${count}` : (wireOn ? "ℹ 提示" : "");
+    const snippet = mb.querySelector("#elv-msgsnippet");
+    snippet.textContent = st?.error ? ("失败：" + String(st.error).slice(0, 60))
+        : st?.separation_error ? ("人声分离失败：" + String(st.separation_error).slice(0, 60))
+        : warns.length ? warns[0].slice(0, 60)
+        : wireOn ? "唱歌模式接线提醒（vocals_padded → H3）"
+        : "消息与接线提醒（点击展开）";
+    const wireEl = mb.querySelector("#elv-wire");
+    if (wireEl) {
+        if (wireOn) {
+            wireEl.style.display = "block";
+            wireEl.innerHTML = "⚠ <b>唱歌模式接线提醒</b>：把 <b>vocals_padded（人声）</b>接到 H3 的音频输入" +
+                "（驱动口型与动作，避免人物跟着鼓点贝斯乱开口）；" +
+                "成片音轨（VHS 的 audio 输入）用 <b>original_audio_padded（原曲）</b>，保留伴奏。";
+        } else {
+            wireEl.style.display = "none";
+        }
+    }
+    const warnEl = mb.querySelector("#elv-warns");
+    if (warnEl) {
+        const items = [];
+        if (st?.separation_error) items.push("⚠ 人声分离失败：" + st.separation_error);
+        warns.forEach((w) => items.push("⚠ " + w));
+        warnEl.style.display = items.length ? "block" : "none";
+        warnEl.innerHTML = items.join("<br>");
+    }
+    const errBox = mb.querySelector("#elv-errorbox");
+    if (errBox) {
+        if (st?.error) {
+            errBox.style.display = "block";
+            errBox.querySelector("#elv-error-text").textContent = st.error;
+            errBox.querySelector("#elv-error-copy").onclick = async () => {
+                try {
+                    await navigator.clipboard.writeText(st.error || "");
+                    errBox.querySelector("#elv-error-copy").textContent = "✓ 已复制";
+                    setTimeout(() => {
+                        const b = errBox.querySelector("#elv-error-copy");
+                        if (b) b.textContent = "📋 复制全部错误";
+                    }, 1500);
+                } catch (err2) { alert("复制失败：" + err2.message); }
+            };
+        } else {
+            errBox.style.display = "none";
+        }
+    }
+}
+
 async function refresh(panel) {
     try {
         // —— 轻量状态轮询：方案/段状态无变化时跳过全量渲染 ——
@@ -629,6 +694,7 @@ async function refresh(panel) {
             panel.statusEl.innerHTML = statusBadge(st) +
                 (st.separation ? ` <span class="elv-badge">人声:${esc(st.separation)}${sepFast}</span>` : "");
             if (panel.resSepBtn) panel.resSepBtn.disabled = st.separation_status === "running";
+            updateMsgbar(panel, st, panel.plan);
             if (panel._lastStatus && panel._lastStatus !== "failed" && st.run_status === "failed") {
                 elvNotify("⚠️ 长视频生成失败", st.error || "请打开面板查看详情。");
             }
@@ -653,49 +719,7 @@ async function refresh(panel) {
             panel.resSepBtn.style.display = plan.mode === "singing" ? "inline-block" : "none";
             panel.resSepBtn.disabled = plan.separation_status === "running";
         }
-        const sepErr = panel.overlay.querySelector("#elv-warns");
-        if (sepErr && plan.separation_error) {
-            sepErr.style.display = "block";
-            sepErr.innerHTML = "⚠ 人声分离失败：" + esc(plan.separation_error);
-        }
-        // 错误详情：固定高度可滚动框 + 复制按钮（不再撑爆面板）
-        const errBox = panel.overlay.querySelector("#elv-errorbox");
-        if (errBox) {
-            if (plan.error) {
-                errBox.style.display = "block";
-                errBox.querySelector("#elv-error-text").textContent = plan.error;
-                errBox.querySelector("#elv-error-copy").onclick = async () => {
-                    try {
-                        await navigator.clipboard.writeText(plan.error || "");
-                        errBox.querySelector("#elv-error-copy").textContent = "✓ 已复制";
-                        setTimeout(() => {
-                            const b = errBox.querySelector("#elv-error-copy");
-                            if (b) b.textContent = "📋 复制全部错误";
-                        }, 1500);
-                    } catch (err) { alert("复制失败：" + err.message); }
-                };
-            } else {
-                errBox.style.display = "none";
-            }
-        }
-        const warnEl = panel.overlay.querySelector("#elv-warns");
-        if (warnEl) {
-            const warns = plan.warnings || [];
-            warnEl.style.display = warns.length ? "block" : "none";
-            warnEl.innerHTML = warns.map((wn) => `⚠ ${esc(wn)}`).join("<br>");
-        }
-        // H3 接线指引（唱歌模式尤其重要：口型必须用人声驱动）
-        const wire = panel.overlay.querySelector("#elv-wire");
-        if (wire) {
-            if (plan.mode === "singing") {
-                wire.style.display = "block";
-                wire.innerHTML = "⚠ <b>唱歌模式接线提醒</b>：把 <b>vocals_padded（人声）</b>接到 H3 的音频输入" +
-                    "（驱动口型与动作，避免人物跟着鼓点贝斯乱开口）；" +
-                    "成片音轨（VHS 的 audio 输入）用 <b>original_audio_padded（原曲）</b>，保留伴奏。";
-            } else {
-                wire.style.display = "none";
-            }
-        }
+        updateMsgbar(panel, st, plan);
         renderSegments(panel.listEl, plan);
         bindSegmentEvents(panel);
         // 桌面通知：状态变为失败时提醒一次
@@ -789,16 +813,26 @@ function openPanel(projectId) {
             <button class="elv-close" title="关闭">✕</button>
         </div>
         <div class="elv-body">
-            <div class="elv-hint" id="elv-wire" style="display:none;color:#f0c674;background:#2a2416;border:1px solid #4a3a17;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
-            <div class="elv-refs-panel" style="border:1px solid #3a3a40;border-radius:8px;padding:8px 10px;margin-bottom:10px">
-                <div class="elv-hint" style="margin:0 0 6px"><b>项目默认参考图</b>：上传一次，所有用默认的段自动继承；段自定义图保持独立。可输入 <b>@图1</b> 在简报中引用图片。</div>
-                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-                    <input type="file" id="elv-ref-upload" accept="image/*" multiple style="font-size:12px;color:#ddd">
-                    <button class="elv-btn" id="elv-ref-copyall" style="padding:2px 10px;font-size:12px">复制默认到全部段</button>
-                    <span class="elv-hint" style="margin:0">默认图：</span>
-                    <input class="elv-mini" id="elv-ref-default" placeholder="默认图文件名" style="width:190px">
-                    <button class="elv-btn" id="elv-ref-apply" style="padding:2px 10px;font-size:12px">应用</button>
+            <div class="elv-msgbar" id="elv-msgbar">
+                <div class="elv-msgbar-head" id="elv-msg-head">
+                    <span class="elv-badge warn" id="elv-msgcount" style="display:none">⚠ 0</span>
+                    <span class="elv-hint" id="elv-msgsnippet" style="margin:0;flex:1">消息与接线提醒（点击展开）</span>
+                    <button class="elv-btn" id="elv-msg-toggle" style="padding:2px 10px;font-size:12px">展开</button>
                 </div>
+                <div class="elv-msgbar-body" id="elv-msgbar-body" style="display:none">
+                    <div class="elv-hint wire" id="elv-wire" style="display:none"></div>
+                    <div class="elv-warn" id="elv-warns" style="display:none"></div>
+                    <div class="elv-errorbox" id="elv-errorbox" style="display:none">
+                        <div class="elv-errorbox-head">
+                            <span class="elv-badge err">失败详情</span>
+                            <span class="elv-hint" style="margin:0">完整信息可滚动查看</span>
+                            <span class="elv-spacer"></span>
+                            <button class="elv-btn" id="elv-error-copy">📋 复制全部错误</button>
+                        </div>
+                        <pre id="elv-error-text"></pre>
+                    </div>
+                </div>
+            </div>
                 <div id="elv-ref-list" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
             </div>
             <div class="elv-warn" id="elv-warns" style="display:none;background:#2a1f16;border:1px solid #4a3517;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
@@ -974,6 +1008,18 @@ function openPanel(projectId) {
         } catch (err) { alert(err.message); }
     };
     renderRefs();
+
+    // 消息条展开/收起（点击头或按钮）
+    const mbHead = overlay.querySelector("#elv-msg-head");
+    const mbBody = overlay.querySelector("#elv-msgbar-body");
+    const mbToggle = overlay.querySelector("#elv-msg-toggle");
+    const toggleMsgbar = () => {
+        const open = mbBody.style.display !== "none";
+        mbBody.style.display = open ? "none" : "block";
+        mbToggle.textContent = open ? "展开" : "收起";
+    };
+    mbHead.onclick = toggleMsgbar;
+    mbToggle.onclick = (e) => { e.stopPropagation(); toggleMsgbar(); };
 
     // 波形切点拖拽 + 视图控制（缩放/平移/定位）
     const waveCanvas = overlay.querySelector("#elv-wave");
