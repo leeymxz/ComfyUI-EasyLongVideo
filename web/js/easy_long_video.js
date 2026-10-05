@@ -837,17 +837,16 @@ function openPanel(projectId) {
                     </div>
                 </div>
             </div>
-                <div id="elv-ref-list" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
-            </div>
-            <div class="elv-warn" id="elv-warns" style="display:none;background:#2a1f16;border:1px solid #4a3517;border-radius:8px;padding:8px 10px;margin-bottom:8px"></div>
-            <div class="elv-errorbox" id="elv-errorbox" style="display:none">
-                <div class="elv-errorbox-head">
-                    <span class="elv-badge err">失败详情</span>
-                    <span class="elv-hint" style="margin:0">错误摘要见上方；完整信息可滚动查看</span>
-                    <span class="elv-spacer"></span>
-                    <button class="elv-btn" id="elv-error-copy">📋 复制全部错误</button>
+            <div class="elv-refs-panel" style="border:1px solid #3a3a40;border-radius:8px;padding:8px 10px;margin-bottom:10px">
+                <div class="elv-hint" style="margin:0 0 6px"><b>项目默认参考图</b>：上传一次，所有用默认的段自动继承；段自定义图保持独立。可输入 <b>@图1</b> 在简报中引用图片。</div>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                    <input type="file" id="elv-ref-upload" accept="image/*" multiple style="font-size:12px;color:#ddd">
+                    <button class="elv-btn" id="elv-ref-copyall" style="padding:2px 10px;font-size:12px">复制默认到全部段</button>
+                    <span class="elv-hint" style="margin:0">默认图：</span>
+                    <input class="elv-mini" id="elv-ref-default" placeholder="默认图文件名" style="width:190px">
+                    <button class="elv-btn" id="elv-ref-apply" style="padding:2px 10px;font-size:12px">应用</button>
                 </div>
-                <pre id="elv-error-text"></pre>
+                <div id="elv-ref-list" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
             </div>
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap">
                 <button class="elv-btn" data-v="all" style="padding:2px 10px;font-size:12px">全曲</button>
@@ -927,7 +926,8 @@ function openPanel(projectId) {
         if (panel.historyEl.value) openPanel(panel.historyEl.value);
     };
     // 删除当前项目（破坏性，二次确认）
-    overlay.querySelector("#elv-delete-project").onclick = async () => {
+    const _delProjEl = overlay.querySelector("#elv-delete-project");
+    if (_delProjEl) _delProjEl.onclick = async () => {
         const name = panel.historyEl.selectedOptions?.[0]?.text || panel.projectId;
         if (!confirm(`确定删除项目「${name}」？\n将删除该项目的音频、分段、参考图与生成记录（不可恢复）。`)) return;
         if (!confirm("再次确认：此操作不可撤销。")) return;
@@ -976,7 +976,8 @@ function openPanel(projectId) {
             });
         } catch (err) { /* 忽略 */ }
     };
-    overlay.querySelector("#elv-ref-upload").onchange = async (e) => {
+    const _refUploadEl = overlay.querySelector("#elv-ref-upload");
+    if (_refUploadEl) _refUploadEl.onchange = async (e) => {
         const files = [...(e.target.files || [])];
         if (!files.length) return;
         try {
@@ -990,7 +991,8 @@ function openPanel(projectId) {
         } catch (err) { alert("上传失败：" + err.message); }
         e.target.value = "";
     };
-    overlay.querySelector("#elv-ref-apply").onclick = async () => {
+    const _refApplyEl = overlay.querySelector("#elv-ref-apply");
+    if (_refApplyEl) _refApplyEl.onclick = async () => {
         const val = overlay.querySelector("#elv-ref-default").value;
         const list = val.split(",").map((s) => s.trim()).filter(Boolean);
         try {
@@ -999,7 +1001,8 @@ function openPanel(projectId) {
             panel.noteEl.textContent = "默认图已更新。";
         } catch (err) { alert(err.message); }
     };
-    overlay.querySelector("#elv-ref-copyall").onclick = async () => {
+    const _refCopyEl = overlay.querySelector("#elv-ref-copyall");
+    if (_refCopyEl) _refCopyEl.onclick = async () => {
         const defs = panel.plan?.default_images || [];
         if (!defs.length) { alert("请先设置默认图。"); return; }
         if (!confirm(`将默认图复制到全部段？（段的自定义图会被覆盖）`)) return;
