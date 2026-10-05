@@ -1466,7 +1466,10 @@ async function loadWaveAndMaybeOpen(node, projectId) {
             renderSegments(panel.listEl, plan);
             bindSegmentEvents(panel);
         }
-    } catch (err) { /* 忽略 */ }
+    } catch (err) {
+        console.warn("[EasyLongVideo] 面板加载失败:", err);
+        if (panel?.noteEl) panel.noteEl.textContent = "⚠ 面板加载失败：" + err.message;
+    }
 }
 
 app.registerExtension({
