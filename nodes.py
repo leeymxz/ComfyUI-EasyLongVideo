@@ -14,6 +14,7 @@ EasyLVUnified（一体化节点）：
     generation_frames     : INT     建议生成帧数
     filename_prefix       : STRING  建议传给视频输出节点的 filename_prefix
 """
+import hashlib
 import json
 import time
 import uuid
@@ -60,6 +61,22 @@ def _apply_vocal_gate(vocals, sr, ref_rms, scale=0.22):
     mask = np.convolve(np.pad(mask, 3, mode="edge"), kernel, mode="valid")[:n]
     gain = np.repeat(np.clip(mask, 0.0, 1.0), hop)[: len(vocals)]
     return (vocals * gain[:, None]).astype(np.float32)
+
+
+def _load_image_tensor(name):
+    """从 ComfyUI input 目录加载图片为 IMAGE 张量（[1, H, W, 3]）。"""
+    import folder_paths
+    from PIL import Image as _Image
+    path = folder_paths.get_annotated_filepath(str(name))
+    with _Image.open(path) as img:
+        arr = np.array(img.convert("RGB")).astype(np.float32) / 255.0
+    return torch.from_numpy(arr)[None,]
+
+
+def _segment_images(plan, row, count=6):
+    """当前段参考图文件名列表（段自定义优先，其次项目默认图），最多 count 张。"""
+    files = list(row.get("images") or []) or list(plan.get("default_images") or [])
+    return files[:count]
 
 
 def _segment_audio(directory, row, sr, fps, plan=None):
@@ -124,9 +141,13 @@ class EasyLVUnified:
             },
         }
 
-    RETURN_TYPES = ("AUDIO", "AUDIO", "STRING", "INT", "STRING")
+    RETURN_TYPES = ("AUDIO", "AUDIO", "STRING", "INT", "STRING",
+                    "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE",
+                    "STRING", "STRING", "INT")
     RETURN_NAMES = ("original_audio_padded", "vocals_padded", "segment_brief",
-                    "generation_frames", "filename_prefix")
+                    "generation_frames", "filename_prefix",
+                    "image_1", "image_2", "image_3", "image_4", "image_5", "image_6",
+                    "segment_material", "segment_prompt", "fps")
     FUNCTION = "run"
     CATEGORY = "长视频/EasyLongVideo"
     OUTPUT_NODE = True
@@ -137,7 +158,12 @@ class EasyLVUnified:
             try:
                 plan = lv_store.read_plan(lv_store.projects_root(), project_id)
                 if plan.get("approved"):
-                    return lv_store.fingerprint(plan)
+                    base = lv_store.fingerprint(plan)
+                    extra = json.dumps(
+                        [[r.get("mute_vocals"), r.get("images"),
+                          r.get("visual_type")] for r in plan.get("segments", [])],
+                        ensure_ascii=False)
+                    return base + hashlib.md5(extra.encode("utf-8")).hexdigest()
             except Exception:
                 pass
         return float("nan")
@@ -364,9 +390,21 @@ class EasyLVUnified:
         source, vocals = _segment_audio(directory, row, int(plan["sample_rate"]),
                                         int(plan.get("fps") or 24), plan)
         prefix = f"EasyLongVideo/projects/{project_id}/takes/seg_{int(segment_index):04d}"
+        files = _segment_images(plan, row)
+        images = []
+        for name in files:
+            try:
+                images.append(_load_image_tensor(name))
+            except Exception:
+                images.append(None)
+        images += [None] * (6 - len(images))
+        material = json.dumps({"images": files,
+                               "default_images": plan.get("default_images", [])},
+                              ensure_ascii=False)
         return (_torch_audio(source, int(plan["sample_rate"])),
                 _torch_audio(vocals, int(plan["sample_rate"])),
-                row.get("brief", ""), int(row["generation_frames"]), prefix)
+                row.get("brief", ""), int(row["generation_frames"]), prefix,
+                *images, material, row.get("brief", ""), int(plan.get("fps") or 24))
 
     # ------------------------------------------------------------ 入口
 
@@ -394,7 +432,7 @@ class EasyLVUnified:
             note += " 注意：" + "；".join(warnings)
         return {"ui": {"elv_project": [project_id], "text": [note]},
                 "result": (audio, vocals if vocals is not None else audio, "",
-                           0, "")}
+                           0, "", None, None, None, None, None, None, "", "", 0)}
 
 
 class EasyLVBriefToPrompt:
