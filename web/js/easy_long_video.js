@@ -710,7 +710,6 @@ async function refresh(panel) {
             if (!runningFast && panel.polling) { clearInterval(panel.polling); panel.polling = null; }
             return;
         }
-        // —— 全量路径：方案或段状态有变化 ——
         const plan = await apiGet(`/elv/project/${panel.projectId}`);
         panel.plan = plan;
         const sepStatus = plan.separation_status === "running" ? "分离中…"
@@ -790,7 +789,7 @@ async function refresh(panel) {
             refBtn.textContent = allHave ? "✓ 参考图约束已内置" : "📌 追加参考图约束";
         }
         if (!running && panel.polling) { clearInterval(panel.polling); panel.polling = null; }
-    } catch (err) { /* 静默轮询错误 */ }
+    } catch (err) { console.warn("[EasyLongVideo] 面板轮询异常:", err); }
 }
 
 async function fillHistory(panel) {
@@ -1013,6 +1012,15 @@ function openPanel(projectId) {
         } catch (err) { alert(err.message); }
     };
     renderRefs();
+    // 自愈：5 秒内数据未加载 → 提示重试（应对缓存/瞬时错误）
+    setTimeout(() => {
+        if (panel && !panel.plan && overlay.isConnected) {
+            panel.noteEl.innerHTML = "⚠ 数据未加载。点此重试 → " +
+                "<button class='elv-btn' id='elv-reload' style='padding:2px 10px;font-size:12px'>🔄 重试</button>";
+            const rb = overlay.querySelector("#elv-reload");
+            if (rb) rb.onclick = () => loadWaveAndMaybeOpen({ id: panel.projectId }, panel.projectId);
+        }
+    }, 5000);
 
     // 消息条展开/收起（点击头或按钮）
     const mbHead = overlay.querySelector("#elv-msg-head");
