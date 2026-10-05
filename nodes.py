@@ -131,6 +131,8 @@ class EasyLVUnified:
                                     "close-up"],),
                 "project_id": ("STRING", {"default": ""}),
                 "segment_index": ("INT", {"default": 0, "min": 0, "max": 10000}),
+                "asr_python": ("STRING", {"default": ""}),
+                "director_mode": ("STRING", {"default": "本地规则"}),
             },
             "optional": {
                 "vocals": ("AUDIO",),
@@ -141,9 +143,9 @@ class EasyLVUnified:
             },
         }
 
-    RETURN_TYPES = ("AUDIO", "AUDIO", "STRING", "INT", "STRING",
+    RETURN_TYPES = ("AUDIO", "AUDIO", "STRING", "INT", "H3LV_MATERIAL",
                     "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE",
-                    "STRING", "STRING", "INT")
+                    "STRING", "FLOAT")
     RETURN_NAMES = ("original_audio_padded", "vocals_padded", "segment_brief",
                     "generation_frames", "filename_prefix",
                     "image_1", "image_2", "image_3", "image_4", "image_5", "image_6",
@@ -172,7 +174,8 @@ class EasyLVUnified:
 
     def _analyze(self, audio, mode, target_seconds, max_seconds, fps, frame_align,
                  asr_mode, asr_model, asr_device, camera_activity, widest_framing,
-                 vocals, voice_separation="auto", abc_text=""):
+                 vocals, voice_separation="auto", abc_text="", asr_python="",
+                 director_mode="本地规则"):
         mix, sr = audio_tensor_to_numpy(audio)
         if float(max_seconds) < float(target_seconds):
             raise ValueError("最长时长不能小于目标时长。")
@@ -228,7 +231,8 @@ class EasyLVUnified:
                         model_root=lv_store.models_root() / "asr",
                         model=asr_model, device=asr_device,
                         log_path=lv_store.state_file(directory, "asr.log"),
-                        interrupt_check=lv_asr.interrupt_guard())
+                        interrupt_check=lv_asr.interrupt_guard(),
+                        python_path=str(asr_python or "").strip() or None)
                 except Exception as exc:  # ASR 失败不阻塞，降级为纯声学
                     warnings.append(f"语音识别未完成，已降级为纯声学分段：{exc}")
                     _interrupt_check()
@@ -398,20 +402,21 @@ class EasyLVUnified:
             except Exception:
                 images.append(None)
         images += [None] * (6 - len(images))
-        material = json.dumps({"images": files,
-                               "default_images": plan.get("default_images", [])},
-                              ensure_ascii=False)
+        material = {"images": files,
+                    "default_images": plan.get("default_images", []),
+                    "project_id": project_id,
+                    "segment_index": int(segment_index)}
         return (_torch_audio(source, int(plan["sample_rate"])),
                 _torch_audio(vocals, int(plan["sample_rate"])),
                 row.get("brief", ""), int(row["generation_frames"]), prefix,
-                *images, material, row.get("brief", ""), int(plan.get("fps") or 24))
+                *images, material, row.get("brief", ""), float(plan.get("fps") or 24))
 
     # ------------------------------------------------------------ 入口
 
     def run(self, audio, mode, target_seconds, max_seconds, fps, frame_align,
             asr_mode, asr_model, asr_device, camera_activity, widest_framing,
             project_id="", segment_index=0, vocals=None, voice_separation="auto",
-            abc_text=""):
+            abc_text="", asr_python="", director_mode="本地规则"):
         project_id = str(project_id or "").strip()
         if project_id:
             try:
@@ -424,7 +429,8 @@ class EasyLVUnified:
             project_id, count, warnings = self._analyze(
                 audio, mode, target_seconds, max_seconds, fps, frame_align,
                 asr_mode, asr_model, asr_device, camera_activity, widest_framing,
-                vocals, voice_separation=voice_separation, abc_text=abc_text)
+                vocals, voice_separation=voice_separation, abc_text=abc_text,
+                asr_python=asr_python, director_mode=director_mode)
         except lv_ffmpeg.FFmpegNotFound:  # 理论上分析阶段不会触发；防御性兜底
             raise
         note = f"分析完成：共 {count} 段。已弹出分段审核面板，请试听并确认后开始生成。"
@@ -432,7 +438,7 @@ class EasyLVUnified:
             note += " 注意：" + "；".join(warnings)
         return {"ui": {"elv_project": [project_id], "text": [note]},
                 "result": (audio, vocals if vocals is not None else audio, "",
-                           0, "", None, None, None, None, None, None, "", "", 0)}
+                           0, "", None, None, None, None, None, None, {}, "", 0.0)}
 
 
 class EasyLVBriefToPrompt:

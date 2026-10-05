@@ -37,9 +37,11 @@ def resolve_model(name):
 
 
 def transcribe(audio_path, output_json, model_root, model="auto", device="auto",
-               log_path=None, timeout_seconds=3600, interrupt_check=None):
+               log_path=None, timeout_seconds=3600, interrupt_check=None,
+               python_path=None):
     """以子进程方式跑 ASR；失败抛 RuntimeError（调用方可降级）。
 
+    python_path: 指定 ASR 子进程使用的 Python 解释器（为空用当前进程的）。
     interrupt_check: 可选回调，ComfyUI 中断时抛出异常以终止等待。
     """
     if not is_available():
@@ -50,7 +52,8 @@ def transcribe(audio_path, output_json, model_root, model="auto", device="auto",
     output_json.parent.mkdir(parents=True, exist_ok=True)
 
     worker = Path(__file__).with_name("lv_asr_worker.py")
-    command = [sys.executable, "-B", str(worker),
+    interpreter = python_path or sys.executable
+    command = [str(interpreter), "-B", str(worker),
                "--audio", str(audio_path), "--output", str(output_json),
                "--model", resolve_model(model), "--device", str(device or "auto"),
                "--download-root", str(model_root)]
