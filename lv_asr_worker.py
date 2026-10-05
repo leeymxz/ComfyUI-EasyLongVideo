@@ -28,10 +28,28 @@ def main():
     compute_type = "auto"
     if args.device == "cpu":
         compute_type = "int8"  # CPU 上用 int8 更快且省内存
-    model = WhisperModel(args.model, device=args.device,
-                         compute_type=compute_type,
-                         download_root=args.download_root,
-                         cpu_threads=max(1, args.cpu_threads))
+
+    def _build_model():
+        try:
+            return WhisperModel(args.model, device=args.device,
+                                compute_type=compute_type,
+                                download_root=args.download_root,
+                                cpu_threads=max(1, args.cpu_threads))
+        except Exception as first_error:
+            # CUDA 库缺失/不匹配（如 cublas64_12.dll）时自动降级 CPU 重试
+            if args.device != "cpu":
+                print("GPU 初始化失败（可能缺少 CUDA 库），自动降级 CPU 重试：",
+                      str(first_error)[:200], file=sys.stderr)
+                try:
+                    return WhisperModel(args.model, device="cpu",
+                                        compute_type="int8",
+                                        download_root=args.download_root,
+                                        cpu_threads=max(1, args.cpu_threads))
+                except Exception:
+                    raise first_error
+            raise
+
+    model = _build_model()
     segments, info = model.transcribe(
         args.audio, word_timestamps=True, vad_filter=True, beam_size=1)
     out = {"segments": [], "words": [],
