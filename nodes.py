@@ -117,41 +117,33 @@ class EasyLVUnified:
             "required": {
                 "audio": ("AUDIO",),
                 "mode": (["singing", "speaking"],),
-                "target_seconds": ("FLOAT", {"default": 11.0, "min": 3.0, "max": 20.0,
-                                             "step": 0.1}),
-                "max_seconds": ("FLOAT", {"default": 15.0, "min": 3.0, "max": 60.0,
+                "max_seconds": ("FLOAT", {"default": 15, "min": 5, "max": 15,
                                           "step": 0.1}),
-                "fps": (["24", "25", "30", "16"],),
-                "frame_align": (["h3", "none"],),
-                "asr_mode": (["auto", "off"],),
-                "asr_model": (lv_asr.MODEL_CHOICES,),
+                "target_seconds": ("FLOAT", {"default": 11, "min": 5, "max": 15,
+                                             "step": 0.1}),
+                "asr_python": ("STRING", {"default": ""}),
+                "asr_model": ("STRING", {"default": ""}),
                 "asr_device": (["auto", "cuda", "cpu"],),
-                "camera_activity": (["auto", "moderate", "dynamic", "steady"],),
-                "widest_framing": (["medium close-up", "medium shot", "full shot",
-                                    "close-up"],),
+                "director_mode": ("STRING", {"default": "本地规则"}),
                 "project_id": ("STRING", {"default": ""}),
                 "segment_index": ("INT", {"default": 0, "min": 0, "max": 10000}),
-                "asr_python": ("STRING", {"default": ""}),
-                "director_mode": ("STRING", {"default": "本地规则"}),
             },
             "optional": {
                 "vocals": ("AUDIO",),
-                "voice_separation": (["auto", "off"],),
                 "abc_text": ("STRING", {"multiline": True, "default": "",
                     "tooltip": "可选 ABC 谱文本：解析段落结构（Intro/Interlude/Verse 等），"
                                "增强间奏判定并给简报注入音乐上下文。"}),
             },
         }
 
-    RETURN_TYPES = ("AUDIO", "AUDIO", "STRING", "INT", "H3LV_MATERIAL",
-                    "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE", "IMAGE",
-                    "STRING", "FLOAT")
-    RETURN_NAMES = ("original_audio_padded", "vocals_padded", "segment_brief",
-                    "generation_frames", "filename_prefix",
-                    "image_1", "image_2", "image_3", "image_4", "image_5", "image_6",
-                    "segment_material", "segment_prompt", "fps")
+    RETURN_TYPES = (("AUDIO", "AUDIO", "INT", "STRING", "H3LV_MATERIAL")
+                    + ("IMAGE",) * 6 + ("STRING", "FLOAT"))
+    RETURN_NAMES = (("original_audio_padded", "vocals_padded", "generation_frames",
+                     "filename_prefix", "segment_material")
+                    + tuple(f"image_{i+1}" for i in range(6))
+                    + ("segment_prompt", "fps"))
     FUNCTION = "run"
-    CATEGORY = "长视频/EasyLongVideo"
+    CATEGORY = "像素幻想/EasyLongVideo"
     OUTPUT_NODE = True
 
     @classmethod
@@ -172,10 +164,12 @@ class EasyLVUnified:
 
     # ------------------------------------------------------------ 分析
 
-    def _analyze(self, audio, mode, target_seconds, max_seconds, fps, frame_align,
-                 asr_mode, asr_model, asr_device, camera_activity, widest_framing,
-                 vocals, voice_separation="auto", abc_text="", asr_python="",
-                 director_mode="本地规则"):
+    # 与原版对齐的固定值（fps 恒 24 / 帧对齐恒 h3 / ASR 恒自动启用）
+    FPS_INT = 24
+    FRAME_ALIGN = "h3"
+
+    def _analyze(self, audio, mode, max_seconds, target_seconds, asr_python,
+                 asr_model, asr_device, director_mode, vocals=None, abc_text=""):
         mix, sr = audio_tensor_to_numpy(audio)
         if float(max_seconds) < float(target_seconds):
             raise ValueError("最长时长不能小于目标时长。")
@@ -196,7 +190,7 @@ class EasyLVUnified:
         write_wav(lv_store.audio_file(directory, "source.wav"), mix, sr)
 
         warnings = []
-        if separation_used is None and mode == "singing" and voice_separation != "off":
+        if separation_used is None and mode == "singing":
             # 唱歌模式自动分离人声：口型/表演驱动必须用干净人声，
             # 否则人物会跟着鼓点贝斯乱开口；成片音轨仍用原曲。
             if lv_separate.is_available():
@@ -222,22 +216,21 @@ class EasyLVUnified:
         separation_note = {"external": "外部输入", "hdemucs": "HTDemucs 自动分离",
                            None: "未分离（原曲即人声）"}.get(separation_used)
         transcript = None
-        if asr_mode != "off":
-            if lv_asr.is_available():
-                try:
-                    transcript = lv_asr.transcribe(
-                        lv_store.audio_file(directory, "vocals.wav"),
-                        lv_store.state_file(directory, "transcript.json"),
-                        model_root=lv_store.models_root() / "asr",
-                        model=asr_model, device=asr_device,
-                        log_path=lv_store.state_file(directory, "asr.log"),
-                        interrupt_check=lv_asr.interrupt_guard(),
-                        python_path=str(asr_python or "").strip() or None)
-                except Exception as exc:  # ASR 失败不阻塞，降级为纯声学
-                    warnings.append(f"语音识别未完成，已降级为纯声学分段：{exc}")
-                    _interrupt_check()
-            else:
-                warnings.append("未安装 faster-whisper，已使用纯声学分段。"
+        if lv_asr.is_available():  # ASR 恒自动启用（与原版一致）
+            try:
+                transcript = lv_asr.transcribe(
+                    lv_store.audio_file(directory, "vocals.wav"),
+                    lv_store.state_file(directory, "transcript.json"),
+                    model_root=lv_store.models_root() / "asr",
+                    model=asr_model, device=asr_device,
+                    log_path=lv_store.state_file(directory, "asr.log"),
+                    interrupt_check=lv_asr.interrupt_guard(),
+                    python_path=str(asr_python or "").strip() or None)
+            except Exception as exc:  # ASR 失败不阻塞，降级为纯声学
+                warnings.append(f"语音识别未完成，已降级为纯声学分段：{exc}")
+                _interrupt_check()
+        else:
+            warnings.append("未安装 faster-whisper，已使用纯声学分段。"
                                 "可选安装后无需其他改动即可自动启用。")
 
         rows, analysis = lv_segment.segmentation(
@@ -284,9 +277,12 @@ class EasyLVUnified:
                                             else "未识别出文字，人声状态需试听确认")
                 row["mute_vocals"] = False
 
-        fps_int = int(fps)
+        fps_int = self.FPS_INT
         seed = project_id[:12]
         user_rules = lv_camera.load_rules(lv_store.rules_path())
+        camera_activity = user_rules.get("singing", {}).get("activity", "auto")
+        widest_framing = user_rules.get("singing", {}).get("widest_framing",
+                                                           "medium close-up")
         states = lv_camera.camera_sequence(mode, rows, activity=camera_activity,
                                            widest=widest_framing, seed=seed,
                                            rules=user_rules)
@@ -294,7 +290,7 @@ class EasyLVUnified:
             seconds = (row["end_sample"] - row["start_sample"]) / sr
             row["edit_frames"] = lv_segment.edit_frames_for(seconds, fps_int)
             row["generation_frames"] = lv_segment.align_frames(
-                seconds, fps_int, frame_align, row["edit_frames"])
+                seconds, fps_int, self.FRAME_ALIGN, row["edit_frames"])
             row.setdefault("visual_type", "performer")
             row.setdefault("images", [])
             row["brief"] = lv_camera.segment_brief(
@@ -350,7 +346,7 @@ class EasyLVUnified:
         plan = {
             "id": project_id, "schema": lv_store.SCHEMA,
             "revision": 1, "created": time.time(),
-            "mode": mode, "fps": fps_int, "frame_align": frame_align,
+            "mode": mode, "fps": fps_int, "frame_align": self.FRAME_ALIGN,
             "max_seconds": float(max_seconds), "target_seconds": float(target_seconds),
             "sample_rate": sr, "samples": int(len(mix)),
             "duration": len(mix) / sr,
@@ -408,15 +404,14 @@ class EasyLVUnified:
                     "segment_index": int(segment_index)}
         return (_torch_audio(source, int(plan["sample_rate"])),
                 _torch_audio(vocals, int(plan["sample_rate"])),
-                row.get("brief", ""), int(row["generation_frames"]), prefix,
-                *images, material, row.get("brief", ""), float(plan.get("fps") or 24))
+                int(row["generation_frames"]), prefix, material,
+                *images, row.get("brief", ""), float(plan.get("fps") or 24))
 
     # ------------------------------------------------------------ 入口
 
-    def run(self, audio, mode, target_seconds, max_seconds, fps, frame_align,
-            asr_mode, asr_model, asr_device, camera_activity, widest_framing,
-            project_id="", segment_index=0, vocals=None, voice_separation="auto",
-            abc_text="", asr_python="", director_mode="本地规则"):
+    def run(self, audio, mode, max_seconds, target_seconds, asr_python, asr_model,
+            asr_device, director_mode, project_id="", segment_index=0, vocals=None,
+            abc_text=""):
         project_id = str(project_id or "").strip()
         if project_id:
             try:
@@ -427,18 +422,18 @@ class EasyLVUnified:
                 pass
         try:
             project_id, count, warnings = self._analyze(
-                audio, mode, target_seconds, max_seconds, fps, frame_align,
-                asr_mode, asr_model, asr_device, camera_activity, widest_framing,
-                vocals, voice_separation=voice_separation, abc_text=abc_text,
-                asr_python=asr_python, director_mode=director_mode)
+                audio, mode, max_seconds, target_seconds, asr_python,
+                asr_model, asr_device, director_mode, vocals=vocals,
+                abc_text=abc_text)
         except lv_ffmpeg.FFmpegNotFound:  # 理论上分析阶段不会触发；防御性兜底
             raise
         note = f"分析完成：共 {count} 段。已弹出分段审核面板，请试听并确认后开始生成。"
         if warnings:
             note += " 注意：" + "；".join(warnings)
         return {"ui": {"elv_project": [project_id], "text": [note]},
-                "result": (audio, vocals if vocals is not None else audio, "",
-                           0, "", None, None, None, None, None, None, {}, "", 0.0)}
+                "result": (audio, vocals if vocals is not None else audio,
+                           0, "", {}, None, None, None, None, None, None,
+                           "", 0.0)}
 
 
 class EasyLVBriefToPrompt:

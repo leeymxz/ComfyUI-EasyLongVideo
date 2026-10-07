@@ -802,7 +802,7 @@ async function fillHistory(panel) {
     } catch (err) { panel.historyEl.innerHTML = ""; }
 }
 
-function openPanel(projectId) {
+function openPanel(projectId, node) {
     injectStyles();
     closePanel();
     const overlay = document.createElement("div");
@@ -873,27 +873,32 @@ function openPanel(projectId) {
         </div>
         <div class="elv-foot">
             <button class="elv-btn primary" id="elv-approve">✓ 保存并确认</button>
+            <button class="elv-btn" id="elv-reanalyze">🔄 重新分析分段</button>
             <button class="elv-btn primary" id="elv-run">▶ 开始顺序生成</button>
-            <button class="elv-btn" id="elv-pause">⏸ 暂停</button>
-            <button class="elv-btn danger" id="elv-stop">⏹ 停止</button>
+            <button class="elv-btn" id="elv-pause">⏸ 当前段完成后暂停</button>
+            <button class="elv-btn danger" id="elv-stop">■ 停止后续生成</button>
             <button class="elv-btn" id="elv-assemble">🎞 仅重新合成</button>
-            <button class="elv-btn" id="elv-reseparate" style="display:none">🎤 重新分离人声</button>
-            <button class="elv-btn" id="elv-playall">▶ 连播全部分段</button>
-            <label style="font-size:12px;color:#99a" title="连播时使用分离后的人声轨（检查各段泄漏）"><input type="checkbox" id="elv-play-vocals"> 人声连播</label>
-            <button class="elv-btn" id="elv-reveal">📂 成片位置</button>
-            <input class="elv-mini" id="elv-export-prefix" placeholder="成片文件名前缀" style="width:110px" title="成片文件命名前缀（留空用时间戳）">
-            <label style="font-size:12px;color:#99a" title="合成完成后自动复制一份到系统下载文件夹"><input type="checkbox" id="elv-export-dl"> 到下载</label>
+            <button class="elv-btn" id="elv-refresh-btn">🔄 刷新状态</button>
             <span class="elv-spacer"></span>
-            <label style="font-size:12px;color:#99a;display:none" id="elv-gate-wrap">间奏静音灵敏度
-                <input type="range" id="elv-gate" min="0.05" max="0.6" step="0.01" style="width:90px;vertical-align:middle">
-                <span id="elv-gate-val" style="color:#ddd"></span></label>
-            <button class="elv-btn" id="elv-mute-interludes" style="display:none" title="批量标记分析检测出的无人声区段落（可单独取消）">🔇 标记间奏段</button>
-            <button class="elv-btn" id="elv-ref-note" title="为所有段落简报追加四视图参考图画面约束（防止人物变成四视图拼图）">📌 追加参考图约束</button>
-            <label style="font-size:12px;color:#99a">失败自动重试
-                <input class="elv-mini" id="elv-retry" type="number" min="0" max="9" value="0" style="width:52px"> 次</label>
-            <label style="font-size:12px;color:#99a">视频输出节点：</label>
-            <select class="elv-select" id="elv-video"></select>
+            <button class="elv-btn" id="elv-adv-toggle">⚙ 高级设置</button>
             <div class="note" id="elv-note"></div>
+            <div id="elv-adv" style="display:none;flex-basis:100%;border-top:1px solid #333;padding-top:10px">
+                <button class="elv-btn" id="elv-reseparate">🎤 重新分离人声</button>
+                <button class="elv-btn" id="elv-playall">▶ 连播全部分段</button>
+                <label style="font-size:12px;color:#99a" title="连播时使用分离后的人声轨"><input type="checkbox" id="elv-play-vocals"> 人声连播</label>
+                <button class="elv-btn" id="elv-reveal">📂 成片位置</button>
+                <input class="elv-mini" id="elv-export-prefix" placeholder="成片文件名前缀" style="width:110px" title="成片文件命名前缀（留空用时间戳）">
+                <label style="font-size:12px;color:#99a" title="合成完成后自动复制一份到系统下载文件夹"><input type="checkbox" id="elv-export-dl"> 到下载</label>
+                <label style="font-size:12px;color:#99a;display:none" id="elv-gate-wrap">间奏静音灵敏度
+                    <input type="range" id="elv-gate" min="0.05" max="0.6" step="0.01" style="width:90px;vertical-align:middle">
+                    <span id="elv-gate-val" style="color:#ddd"></span></label>
+                <button class="elv-btn" id="elv-mute-interludes" style="display:none" title="批量标记分析检测出的无人声区段落（可单独取消）">🔇 标记间奏段</button>
+                <button class="elv-btn" id="elv-ref-note" title="为所有段落简报追加四视图参考图画面约束">📌 追加参考图约束</button>
+                <label style="font-size:12px;color:#99a">失败自动重试
+                    <input class="elv-mini" id="elv-retry" type="number" min="0" max="9" value="0" style="width:52px"> 次</label>
+                <label style="font-size:12px;color:#99a">视频输出节点：</label>
+                <select class="elv-select" id="elv-video"></select>
+            </div>
         </div>
     </div>`;
     document.body.appendChild(overlay);
@@ -902,7 +907,7 @@ function openPanel(projectId) {
         if (e.target === overlay) { stopPlaylist(panel); closePanel(); }
     });
 
-    panel = { projectId, overlay, plan: null, polling: null, playlist: null,
+    panel = { projectId, node: node || null, overlay, plan: null, polling: null, playlist: null,
         statusEl: overlay.querySelector("#elv-status"),
         listEl: overlay.querySelector("#elv-list"),
         finalEl: overlay.querySelector("#elv-final"),
@@ -922,8 +927,32 @@ function openPanel(projectId) {
         btnPause: overlay.querySelector("#elv-pause"),
         btnStop: overlay.querySelector("#elv-stop") };
 
+    // 主操作：重新分析分段（清空节点 project_id，提示 Queue）
+    const reanalyzeEl = overlay.querySelector("#elv-reanalyze");
+    if (reanalyzeEl) reanalyzeEl.onclick = () => {
+        if (panel.node) {
+            const w = panel.node.widgets?.find((x) => x.name === "project_id");
+            if (w) w.value = "";
+        }
+        closePanel();
+        alert("已清空项目编号。请点击 ComfyUI 的「运行 (Queue)」按当前参数重新分析分段。");
+    };
+    // 刷新状态
+    const refreshBtn = overlay.querySelector("#elv-refresh-btn");
+    if (refreshBtn) refreshBtn.onclick = () => { refresh(panel); fillHistory(panel); };
+    // 高级设置折叠
+    const advToggle = overlay.querySelector("#elv-adv-toggle");
+    const advBox = overlay.querySelector("#elv-adv");
+    if (advToggle && advBox) {
+        advToggle.onclick = () => {
+            const open = advBox.style.display !== "none";
+            advBox.style.display = open ? "none" : "block";
+            advToggle.textContent = open ? "⚙ 高级设置" : "⚙ 收起高级";
+        };
+    }
+
     panel.historyEl.onchange = () => {
-        if (panel.historyEl.value) openPanel(panel.historyEl.value);
+        if (panel.historyEl.value) openPanel(panel.historyEl.value, panel.node);
     };
     // 删除当前项目（破坏性，二次确认）
     const _delProjEl = overlay.querySelector("#elv-delete-project");
@@ -1452,7 +1481,7 @@ function elvNotify(title, body) {
 // ---------------------------------------------------------------- 扩展注册
 
 async function loadWaveAndMaybeOpen(node, projectId) {
-    openPanel(projectId);
+    openPanel(projectId, node);
     try {
         const analysis = await apiGet(`/elv/project/${projectId}/analysis`);
         const plan = await apiGet(`/elv/project/${projectId}`);
@@ -1508,20 +1537,7 @@ app.registerExtension({
                         if (CN_LABELS[w.name]) w.label = CN_LABELS[w.name];
                     }
                 } catch (err) { console.warn("[EasyLongVideo] 中文标签失败:", err); }
-                // 防崩加固：每个控件独立容错，单个失败不影响其余
-                try {
-                    const preset = self.addWidget("combo", "⚙ 参数预设", "自定义", (v) => {
-                        try {
-                            if (v === "自定义" || !PRESETS[v]) return;
-                            for (const [name, value] of Object.entries(PRESETS[v])) {
-                                const w = self.widgets?.find((x) => x.name === name);
-                                if (w) { w.value = value; }
-                            }
-                            app.graph.setDirtyCanvas(true, false);
-                        } catch (err) { console.warn("[EasyLongVideo] 预设失败:", err); }
-                    }, { values: Object.keys(PRESETS).concat(["自定义"]) });
-                    preset.serialize = false;
-                } catch (err) { console.warn("[EasyLongVideo] 预设下拉失败:", err); }
+                // 与原版一致的三个操作按钮（预设置下拉/折叠已移除）
                 const makeBtn = (label, handler) => {
                     try {
                         const btn = self.addWidget("button", label, null, handler);
@@ -1542,24 +1558,6 @@ app.registerExtension({
                     const widget = self.widgets?.find((w) => w.name === "project_id");
                     if (widget?.value) loadWaveAndMaybeOpen(self, widget.value);
                     else alert("请先运行一次节点完成音频分析。");
-                });
-                // 参数折叠（实验性）：折叠高级参数，节点矮化
-                const ADV_WIDGETS = ["asr_mode", "asr_model", "asr_device",
-                                     "frame_align", "voice_separation"];
-                makeBtn("⚙ 折叠高级参数", () => {
-                    try {
-                        self._advCollapsed = !self._advCollapsed;
-                        const show = !self._advCollapsed;
-                        for (const w of self.widgets || []) {
-                            if (ADV_WIDGETS.includes(w.name)) {
-                                if (w.__origH === undefined) w.__origH = w.height || 24;
-                                w.height = show ? w.__origH : 0;
-                                if (w.computedHeight !== undefined) w.computedHeight = w.height;
-                            }
-                        }
-                        self.setSize([self.size[0], self.size[1]]);
-                        app.graph.setDirtyCanvas(true, false);
-                    } catch (err) { console.warn("[EasyLongVideo] 折叠失败:", err); }
                 });
             }, 0);
         };

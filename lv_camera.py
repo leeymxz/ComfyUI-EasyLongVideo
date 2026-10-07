@@ -46,6 +46,8 @@ def default_rules():
             "no_adjacent_same_family": True,
             "alternate_lateral_direction": True,
             "avoid_direct_axis_cross": True,
+            "activity": "auto",
+            "widest_framing": "medium close-up",
         },
         "performance_text": dict(PERFORMANCE_TEXT),
     }
@@ -74,6 +76,11 @@ def validate_rules(payload):
                  "avoid_direct_axis_cross"):
         if flag in singing:
             rules["singing"][flag] = bool(singing[flag])
+    if singing.get("activity") in ("auto", "moderate", "dynamic", "steady"):
+        rules["singing"]["activity"] = singing["activity"]
+    if singing.get("widest_framing") in ("close-up", "medium close-up",
+                                          "medium shot", "full shot"):
+        rules["singing"]["widest_framing"] = singing["widest_framing"]
     perf = payload.get("performance_text")
     if isinstance(perf, dict):
         for key in ("restrained", "natural", "energetic"):

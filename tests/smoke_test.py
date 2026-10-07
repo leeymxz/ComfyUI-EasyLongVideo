@@ -97,10 +97,10 @@ from easylongvideo.lv_store import (read_plan, write_plan, fingerprint,  # noqa:
 from easylongvideo.nodes import EasyLVUnified  # noqa: E402
 
 node = EasyLVUnified()
-result = node.run(audio=audio_dict, mode="speaking", target_seconds=8.0,
-                  max_seconds=12.0, fps="24", frame_align="h3", asr_mode="off",
-                  asr_model="auto", asr_device="cpu", camera_activity="auto",
-                  widest_framing="medium shot", project_id="", segment_index=0)
+result = node.run(audio=audio_dict, mode="speaking", max_seconds=12.0,
+                  target_seconds=8.0, asr_python="", asr_model="",
+                  asr_device="cpu", director_mode="本地规则",
+                  project_id="", segment_index=0)
 project_id = result["ui"]["elv_project"][0]
 plan = read_plan(projects_root(), project_id)
 count = len(plan["segments"])
@@ -117,10 +117,10 @@ assert cursor == int(DURATION * SR)
 print("[2] 覆盖完整性 OK")
 
 # 未确认时再次运行一体化节点：与参考实现一致，应视为"重新分析"（新建项目）
-result2 = node.run(audio=audio_dict, mode="speaking", target_seconds=8.0,
-                   max_seconds=12.0, fps="24", frame_align="h3", asr_mode="off",
-                   asr_model="auto", asr_device="cpu", camera_activity="auto",
-                   widest_framing="medium shot", project_id=project_id, segment_index=0)
+result2 = node.run(audio=audio_dict, mode="speaking", max_seconds=12.0,
+                   target_seconds=8.0, asr_python="", asr_model="",
+                   asr_device="cpu", director_mode="本地规则",
+                   project_id=project_id, segment_index=0)
 new_id = result2["ui"]["elv_project"][0]
 assert new_id and new_id != project_id, "未确认时应重新分析产生新项目"
 plan2 = read_plan(projects_root(), new_id)
@@ -133,29 +133,31 @@ plan = read_plan(projects_root(), project_id)
 plan["approved"] = True
 plan["approved_fingerprint"] = fingerprint(plan)
 write_plan(projects_root(), plan)
-loaded = node.run(audio=audio_dict, mode="speaking", target_seconds=8.0,
-                  max_seconds=12.0, fps="24", frame_align="h3", asr_mode="off",
-                  asr_model="auto", asr_device="cpu", camera_activity="auto",
-                  widest_framing="medium shot", project_id=project_id, segment_index=0)
+loaded = node.run(audio=audio_dict, mode="speaking", max_seconds=12.0,
+                  target_seconds=8.0, asr_python="", asr_model="",
+                  asr_device="cpu", director_mode="本地规则",
+                  project_id=project_id, segment_index=0)
 src = loaded["result"][0]["waveform"].arr
 n_samples = src.shape[-1]
 row = plan["segments"][0]
 expected = (row["generation_frames"] * SR + 23) // 24
 assert n_samples == expected, f"补齐采样数不符：{n_samples} != {expected}"
 assert (expected - (row["end_sample"] - row["start_sample"])) < SR  # 补齐不超过 1 秒
-brief = loaded["result"][2]
+brief = loaded["result"][11]  # segment_prompt（原简报内容）
 assert "固定机位" in brief and "模式：口播" in brief
-assert loaded["result"][3] == row["generation_frames"]
-assert loaded["result"][4].endswith("seg_0000")
+assert loaded["result"][2] == row["generation_frames"]
+assert loaded["result"][3].endswith("seg_0000")
+assert loaded["result"][4]["segment_index"] == 0          # segment_material 对象
+assert loaded["result"][12] == 24.0                        # fps FLOAT
 print(f"[4] 按段加载 OK：第 0 段 {n_samples} 采样（{n_samples/SR:.2f}s），帧数 {row['generation_frames']}")
 print(f"    简报示例：{brief.splitlines()[1][:60]}…")
 
 # 每一段都能加载
 for i in range(count):
-    out = node.run(audio=audio_dict, mode="speaking", target_seconds=8.0,
-                   max_seconds=12.0, fps="24", frame_align="h3", asr_mode="off",
-                   asr_model="auto", asr_device="cpu", camera_activity="auto",
-                   widest_framing="medium shot", project_id=project_id, segment_index=i)
+    out = node.run(audio=audio_dict, mode="speaking", max_seconds=12.0,
+                   target_seconds=8.0, asr_python="", asr_model="",
+                   asr_device="cpu", director_mode="本地规则",
+                   project_id=project_id, segment_index=i)
     assert out["result"][0]["waveform"].arr.size > 0
 print(f"[5] 全部 {count} 段加载 OK")
 
