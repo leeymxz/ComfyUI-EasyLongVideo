@@ -1537,6 +1537,22 @@ app.registerExtension({
                         if (CN_LABELS[w.name]) w.label = CN_LABELS[w.name];
                     }
                 } catch (err) { console.warn("[EasyLongVideo] 中文标签失败:", err); }
+                // 旧工作流参数顺序迁移容错：类型/选项不符的 widget 值重置为合法默认
+                try {
+                    for (const w of self.widgets || []) {
+                        const v = w.value;
+                        if (w.type === "number" && typeof v !== "number") {
+                            const n = parseFloat(v);
+                            w.value = Number.isFinite(n) ? n
+                                : (w.options?.default ?? 0);
+                        }
+                        if (w.type === "combo" && Array.isArray(w.options?.values)
+                                && w.options.values.length
+                                && !w.options.values.includes(v)) {
+                            w.value = w.options.values[0];
+                        }
+                    }
+                } catch (err) { console.warn("[EasyLongVideo] 参数迁移容错失败:", err); }
                 // 与原版一致的三个操作按钮（预设置下拉/折叠已移除）
                 const makeBtn = (label, handler) => {
                     try {
