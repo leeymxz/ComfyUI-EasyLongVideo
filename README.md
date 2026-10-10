@@ -121,20 +121,29 @@
 面板确认分段后，把节点上的 `segment_index` 改成 0,1,2…逐次 Queue，
 每段手动下载输出即可；「仅重新合成」仍可用来最后拼片。
 
-## 节点参数说明
+## 节点参数说明（与原版 H3-LongVideo 完全对齐）
 
 | 参数 | 说明 |
 | --- | --- |
-| `mode` | `singing` 唱歌（安排运镜）/ `speaking` 口播（固定机位） |
-| `target_seconds` / `max_seconds` | 每段目标/最长时长（秒） |
-| `fps` | 输出视频帧率：16 / 24 / 25 / 30 |
-| `frame_align` | `h3`：帧数对齐 5+17k 且 ≥124（H3/AnimateDiff 类约束）；`none`：自由 |
-| `asr_mode` | `auto`：装了 faster-whisper 就用；`off`：纯声学分段 |
-| `asr_model` | `auto`=small；可改 tiny/base/medium/large-v3-turbo |
-| `asr_device` | `auto` / `cuda` / `cpu`（CPU 自动用 int8 提速） |
-| `camera_activity` | 唱歌运镜强度：auto（按能量）/ moderate / dynamic / steady |
-| `widest_framing` | 唱歌允许的最远景别（决定推拉可用的景别范围） |
-| `vocals`（可选输入） | 已分离的人声，与原声同采样率同长度 |
+| `mode` | `singing` 唱歌（自动分离人声+安排运镜）/ `speaking` 口播（固定机位） |
+| `max_seconds` / `target_seconds` | 每段最长/目标时长（秒，5~15） |
+| `asr_python` | 可选：ASR 子进程使用的 Python 路径（留空=当前 ComfyUI Python） |
+| `asr_model` | 可选：faster-whisper 模型名（留空=small；装了声识别才生效） |
+| `asr_device` | `auto` / `cuda` / `cpu`（缺 CUDA 库时自动降级 CPU） |
+| `director_mode` | 兼容原版的导演模式（默认"本地规则"，等价运镜规则 JSON） |
+| `vocals`（可选输入） | 已分离的人声（同版本未裁切），留空则唱歌模式自动分离 |
+| `abc_text`（可选输入） | ABC 谱文本：段落结构增强间奏判定 + 简报注入音乐上下文 |
+
+**固定值**（与原版一致）：fps=24、帧数对齐 5+17k(h3)、唱歌自动分离、ASR 自动启用；
+运镜活跃度与最远景别在「⚙ 运镜规则」JSON 里调整（`activity` / `widest_framing` 字段）。
+
+**节点输出（13 个，与原版同序同名）**：
+`original_audio_padded` `vocals_padded` `generation_frames` `filename_prefix`
+`segment_material`(H3LV_MATERIAL) `image_1~6` `segment_prompt` `fps`(FLOAT 24.0)
+
+> ⚠️ **从旧版本升级**：参数顺序与原版对齐后有变化，旧工作流的节点需
+> **删除后重新添加**（面板会自动修正类型错位的值，但建议重建节点并重连）。
+> 「简报转提示词」节点（EasyLVBriefToPrompt）为可选增强，非必需。
 
 ## 输出目录
 

@@ -15,27 +15,15 @@ let panel = null; // { root, projectId, plan, polling, playlist }
 // 参数中文标签（仅改显示，不影响保存的工作流数据）
 const CN_LABELS = {
     mode: "模式",
-    target_seconds: "目标段长（秒）",
     max_seconds: "最长段长（秒）",
-    fps: "帧率 FPS",
-    frame_align: "帧数对齐",
-    asr_mode: "语音识别",
+    target_seconds: "目标段长（秒）",
+    asr_python: "ASR Python 路径",
     asr_model: "识别模型",
     asr_device: "识别设备",
-    camera_activity: "镜头活跃度",
-    widest_framing: "最远允许景别",
+    director_mode: "导演模式",
     project_id: "项目编号",
     segment_index: "分段编号",
-};
-
-// 参数预设（H3 推荐组合）
-const PRESETS = {
-    "H3 唱歌": { mode: "singing", target_seconds: 11.0, max_seconds: 15.0,
-        fps: "24", frame_align: "h3", asr_mode: "auto", asr_model: "auto",
-        asr_device: "auto", camera_activity: "auto", widest_framing: "medium shot" },
-    "H3 口播": { mode: "speaking", target_seconds: 12.0, max_seconds: 15.0,
-        fps: "24", frame_align: "h3", asr_mode: "auto", asr_model: "auto",
-        asr_device: "auto", camera_activity: "steady", widest_framing: "medium close-up" },
+    abc_text: "ABC 谱（可选）",
 };
 
 function injectStyles() {
