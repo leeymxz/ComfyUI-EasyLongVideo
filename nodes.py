@@ -59,7 +59,11 @@ def _apply_vocal_gate(vocals, sr, ref_rms, scale=0.22):
     mask = (rms > thr).astype(np.float32)
     kernel = np.ones(7) / 7.0
     mask = np.convolve(np.pad(mask, 3, mode="edge"), kernel, mode="valid")[:n]
-    gain = np.repeat(np.clip(mask, 0.0, 1.0), hop)[: len(vocals)]
+    gain = np.repeat(np.clip(mask, 0.0, 1.0), hop)
+    if len(gain) < len(vocals):
+        # 音频长度不是 hop 整数倍时，用边缘值补齐到与 vocals 等长
+        gain = np.pad(gain, (0, len(vocals) - len(gain)), mode="edge")
+    gain = gain[: len(vocals)]
     return (vocals * gain[:, None]).astype(np.float32)
 
 
